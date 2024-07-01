@@ -119,6 +119,54 @@ arrow::Datum DoConvertScalar(TType* type, const T& value, arrow::MemoryPool& poo
             std::shared_ptr<arrow::Scalar> scalar = std::make_shared<arrow::BinaryScalar>(buffer, type);
             return arrow::Datum(scalar);
         }
+        case NUdf::EDataSlot::TzDate: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::UInt16Scalar>(value.template Get<ui16>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzDate>()));
+        }
+        case NUdf::EDataSlot::TzDatetime: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::UInt32Scalar>(value.template Get<ui32>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzDatetime>()));
+        }
+        case NUdf::EDataSlot::TzTimestamp: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::UInt64Scalar>(value.template Get<ui64>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzTimestamp>()));
+        }
+        case NUdf::EDataSlot::TzDate32: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::Int32Scalar>(value.template Get<i32>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzDate32>()));
+        }
+        case NUdf::EDataSlot::TzDatetime64: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::Int64Scalar>(value.template Get<i64>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzDatetime64>()));
+        }
+        case NUdf::EDataSlot::TzTimestamp64: {
+            auto items = arrow::StructScalar::ValueType{ 
+                std::make_shared<arrow::Int64Scalar>(value.template Get<i64>()),
+                std::make_shared<arrow::UInt16Scalar>(value.GetTimezoneId())
+            };
+
+            return arrow::Datum(std::make_shared<arrow::StructScalar>(items, MakeTzDateArrowType<NUdf::EDataSlot::TzTimestamp64>()));
+        }        
         default:
             MKQL_ENSURE(false, "Unsupported data slot " << slot);
         }

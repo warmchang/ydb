@@ -235,13 +235,15 @@ public:
     //! If |true| reader will retain a set of peers that will be banned for every session.
     bool BanPeersPermanently;
 
-    //! For testing purposes.
     //! If |true| network throttlers will be applied even in case of requests to local host.
     bool EnableLocalThrottling;
 
     //! For testing purposes.
     //! Unless null, reader will simulate failure of accessing chunk meta cache with such probability.
     std::optional<double> ChunkMetaCacheFailureProbability;
+
+    //! Use chunk prober to reduce the number of probing requests.
+    bool UseChunkProber;
 
     REGISTER_YSON_STRUCT(TReplicationReaderConfig);
 
@@ -362,6 +364,9 @@ public:
     int AllocateWriteTargetsRetryCount;
 
     std::optional<TDuration> TestingDelay;
+
+    //! If |true| network throttlers will be applied even in case of requests to local host.
+    bool EnableLocalThrottling;
 
     int GetDirectUploadNodeCount();
 

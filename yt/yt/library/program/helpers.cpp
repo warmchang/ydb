@@ -19,6 +19,7 @@
 #include <yt/yt/core/logging/log_manager.h>
 
 #include <yt/yt/core/concurrency/execution_stack.h>
+#include <yt/yt/core/concurrency/fiber_scheduler_thread.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <tcmalloc/malloc_extension.h>
@@ -201,6 +202,8 @@ void ConfigureSingletons(const TSingletonsConfigPtr& config)
 
     NBus::TTcpDispatcher::Get()->Configure(config->TcpDispatcher);
 
+    NPipes::TIODispatcher::Get()->Configure(config->IODispatcher);
+
     NRpc::TDispatcher::Get()->Configure(config->RpcDispatcher);
 
     NRpc::NGrpc::TDispatcher::Get()->Configure(config->GrpcDispatcher);
@@ -238,6 +241,8 @@ void ReconfigureSingletons(const TSingletonsConfigPtr& config, const TSingletons
 {
     SetSpinWaitSlowPathLoggingThreshold(dynamicConfig->SpinWaitSlowPathLoggingThreshold.value_or(config->SpinWaitSlowPathLoggingThreshold));
 
+    NConcurrency::UpdateMaxIdleFibers(dynamicConfig->MaxIdleFibers);
+
     if (!NYTAlloc::IsConfiguredFromEnv()) {
         NYTAlloc::Configure(dynamicConfig->YTAlloc ? dynamicConfig->YTAlloc : config->YTAlloc);
     }
@@ -254,6 +259,8 @@ void ReconfigureSingletons(const TSingletonsConfigPtr& config, const TSingletons
     }
 
     NBus::TTcpDispatcher::Get()->Configure(config->TcpDispatcher->ApplyDynamic(dynamicConfig->TcpDispatcher));
+
+    NPipes::TIODispatcher::Get()->Configure(dynamicConfig->IODispatcher ? dynamicConfig->IODispatcher : config->IODispatcher);
 
     NRpc::TDispatcher::Get()->Configure(config->RpcDispatcher->ApplyDynamic(dynamicConfig->RpcDispatcher));
 

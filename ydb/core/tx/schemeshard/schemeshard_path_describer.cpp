@@ -905,6 +905,18 @@ void TPathDescriber::DescribeView(const TActorContext&, TPathId pathId, TPathEle
     entry->SetQueryText(viewInfo->QueryText);
 }
 
+void TPathDescriber::DescribeResourcePool(TPathId pathId, TPathElement::TPtr pathEl) {
+    auto it = Self->ResourcePools.FindPtr(pathId);
+    Y_ABORT_UNLESS(it, "ResourcePools is not found");
+    TResourcePoolInfo::TPtr resourcePoolInfo = *it;
+
+    auto entry = Result->Record.MutablePathDescription()->MutableResourcePoolDescription();
+    entry->SetName(pathEl->Name);
+    PathIdFromPathId(pathId, entry->MutablePathId());
+    entry->SetVersion(resourcePoolInfo->AlterVersion);
+    entry->MutableProperties()->CopyFrom(resourcePoolInfo->Properties);
+}
+
 static bool ConsiderAsDropped(const TPath& path) {
     Y_ABORT_UNLESS(path.IsResolved());
 
@@ -1055,6 +1067,9 @@ THolder<TEvSchemeShard::TEvDescribeSchemeResultBuilder> TPathDescriber::Describe
             break;
         case NKikimrSchemeOp::EPathTypeView:
             DescribeView(ctx, base->PathId, base);
+            break;
+        case NKikimrSchemeOp::EPathTypeResourcePool:
+            DescribeResourcePool(base->PathId, base);
             break;
         case NKikimrSchemeOp::EPathTypeInvalid:
             Y_UNREACHABLE();
@@ -1222,6 +1237,13 @@ void TSchemeShard::DescribeTableIndex(const TPathId& pathId, const TString& name
 
     const auto& tableStats = indexImplTable->GetStats().Aggregated;
     entry.SetDataSize(tableStats.DataSize + tableStats.IndexSize);
+
+    *entry.MutablePartitioningPolicy() = indexImplTable->PartitionConfig().GetPartitioningPolicy();
+    if (const auto& explicitPartitions = indexImplTable->TableDescription.GetSplitBoundary();
+        !explicitPartitions.empty()
+    ) {
+        *entry.MutableExplicitPartitions()->MutableSplitBoundary() = explicitPartitions;
+    }
 }
 
 void TSchemeShard::DescribeCdcStream(const TPathId& pathId, const TString& name,
@@ -1249,6 +1271,12 @@ void TSchemeShard::DescribeCdcStream(const TPathId& pathId, const TString& name,
     PathIdFromPathId(pathId, desc.MutablePathId());
     desc.SetState(info->State);
     desc.SetSchemaVersion(info->AlterVersion);
+
+    if (info->ScanShards) {
+        auto& scanProgress = *desc.MutableScanProgress();
+        scanProgress.SetShardsTotal(info->ScanShards.size());
+        scanProgress.SetShardsCompleted(info->DoneShards.size());
+    }
 
     Y_ABORT_UNLESS(PathsById.contains(pathId));
     auto path = PathsById.at(pathId);

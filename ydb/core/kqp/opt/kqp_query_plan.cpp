@@ -509,7 +509,10 @@ private:
             } else if (inputItemType->GetKind() == ETypeAnnotationKind::Tuple) {
                 planNode.TypeName = "TableLookupJoin";
                 const auto inputTupleType = inputItemType->Cast<TTupleExprType>();
-                lookupKeyColumnsStruct = inputTupleType->GetItems()[0]->Cast<TStructExprType>();
+                YQL_ENSURE(inputTupleType->GetItems()[0]->GetKind() == ETypeAnnotationKind::Optional);
+                const auto joinKeyType = inputTupleType->GetItems()[0]->Cast<TOptionalExprType>()->GetItemType();
+                YQL_ENSURE(joinKeyType->GetKind() == ETypeAnnotationKind::Struct);
+                lookupKeyColumnsStruct = joinKeyType->Cast<TStructExprType>();
             }
 
             YQL_ENSURE(lookupKeyColumnsStruct);
@@ -671,23 +674,7 @@ private:
                 columns.AppendValue(col.Value());
             }
 
-            auto settings = NYql::TKqpReadTableSettings::Parse(sourceSettings.Settings());
-            if (settings.ItemsLimit && !readInfo.Limit) {
-                auto limit = GetExprStr(TExprBase(settings.ItemsLimit), false);
-                if (auto maybeResultBinding = ContainResultBinding(limit)) {
-                    const auto [txId, resId] = *maybeResultBinding;
-                    if (auto result = GetResult(txId, resId)) {
-                        limit = result->GetDataText();
-                    }
-                }
-
-                readInfo.Limit = limit;
-                op.Properties["ReadLimit"] = limit;
-            }
-            if (settings.Reverse) {
-                readInfo.Reverse = true;
-                op.Properties["Reverse"] = true;
-            }
+            AddReadTableSettings(op, sourceSettings.Settings(), readInfo);
 
             AddOptimizerEstimates(op, sourceSettings);
 
@@ -772,23 +759,7 @@ private:
                 columns.AppendValue(col.Value());
             }
 
-            auto settings = NYql::TKqpReadTableSettings::Parse(sourceSettings.Settings());
-            if (settings.ItemsLimit && !readInfo.Limit) {
-                auto limit = GetExprStr(TExprBase(settings.ItemsLimit), false);
-                if (auto maybeResultBinding = ContainResultBinding(limit)) {
-                    const auto [txId, resId] = *maybeResultBinding;
-                    if (auto result = GetResult(txId, resId)) {
-                        limit = result->GetDataText();
-                    }
-                }
-
-                readInfo.Limit = limit;
-                op.Properties["ReadLimit"] = limit;
-            }
-            if (settings.Reverse) {
-                readInfo.Reverse = true;
-                op.Properties["Reverse"] = true;
-            }
+            AddReadTableSettings(op, sourceSettings.Settings(), readInfo);
 
             AddOptimizerEstimates(op, sourceSettings);
 
@@ -852,6 +823,12 @@ private:
             op.Properties["Name"] = TStringBuilder() << "Read " << dataSource;
         } else {
             op.Properties["Name"] = "Read from external data source";
+        }
+
+        if (auto stats = SerializerCtx.TypeCtx.GetStats(dataSource.Raw())) {
+            op.Properties["E-Rows"] = TStringBuilder() << stats->Nrows;
+            op.Properties["E-Cost"] = TStringBuilder() << stats->Cost;
+            op.Properties["E-Size"] = TStringBuilder() << stats->ByteSize;
         }
 
         if (dqIntegration) {
@@ -1614,23 +1591,7 @@ private:
             columns.AppendValue(col.Value());
         }
 
-        auto settings = NYql::TKqpReadTableSettings::Parse(read);
-        if (settings.ItemsLimit && !readInfo.Limit) {
-            auto limit = GetExprStr(TExprBase(settings.ItemsLimit), false);
-            if (auto maybeResultBinding = ContainResultBinding(limit)) {
-                const auto [txId, resId] = *maybeResultBinding;
-                if (auto result = GetResult(txId, resId)) {
-                    limit = result->GetDataText();
-                }
-            }
-
-            readInfo.Limit = limit;
-            op.Properties["ReadLimit"] = limit;
-        }
-        if (settings.Reverse) {
-            readInfo.Reverse = true;
-            op.Properties["Reverse"] = true;
-        }
+        AddReadTableSettings(op, read, readInfo);
 
         if (read.Maybe<TKqpReadOlapTableRangesBase>()) {
             op.Properties["SsaProgram"] = GetSsaProgramInJsonByTable(table, planNode.StageProto);
@@ -1750,7 +1711,26 @@ private:
             columns.AppendValue(col.Value());
         }
 
-        auto settings = NYql::TKqpReadTableSettings::Parse(read);
+        AddReadTableSettings(op, read, readInfo);
+
+        SerializerCtx.Tables[table].Reads.push_back(readInfo);
+
+        AddOptimizerEstimates(op, read);
+
+        auto readName = GetNameByReadType(readInfo.Type);
+        op.Properties["Name"] = readName;
+        ui32 operatorId = AddOperator(planNode, readName, std::move(op));
+
+        return operatorId;
+    }
+
+    template <typename TReadTableSettings>
+    void AddReadTableSettings(
+        TOperator& op, 
+        const TReadTableSettings& readTableSettings, 
+        TTableRead& readInfo
+    ) {
+        auto settings = NYql::TKqpReadTableSettings::Parse(readTableSettings);
         if (settings.ItemsLimit && !readInfo.Limit) {
             auto limit = GetExprStr(TExprBase(settings.ItemsLimit), false);
             if (auto maybeResultBinding = ContainResultBinding(limit)) {
@@ -1768,16 +1748,13 @@ private:
             op.Properties["Reverse"] = true;
         }
 
-        SerializerCtx.Tables[table].Reads.push_back(readInfo);
-
-        AddOptimizerEstimates(op, read);
-
-        auto readName = GetNameByReadType(readInfo.Type);
-        op.Properties["Name"] = readName;
-        ui32 operatorId = AddOperator(planNode, readName, std::move(op));
-
-        return operatorId;
+        if (settings.SequentialInFlight) {
+            op.Properties["Scan"] = "Sequential"; 
+        } else {
+            op.Properties["Scan"] = "Parallel"; 
+        }
     }
+
 
 private:
     TSerializerCtx& SerializerCtx;
@@ -2392,6 +2369,9 @@ void FillAsyncAggrStat(NJson::TJsonValue& node, const NYql::NDqProto::TDqAsyncSt
     if (asyncAggr.HasBytes()) {
         FillAggrStat(node, asyncAggr.GetBytes(), "Bytes");
     }
+    if (asyncAggr.HasDecompressedBytes()) {
+        FillAggrStat(node, asyncAggr.GetDecompressedBytes(), "DecompressedBytes");
+    }
     if (asyncAggr.HasRows()) {
         FillAggrStat(node, asyncAggr.GetRows(), "Rows");
     }
@@ -2495,6 +2475,7 @@ TString AddExecStatsToTxPlan(const TString& txPlanJson, const NYql::NDqProto::TD
         SetNonZero(node, "ResultBytes", taskStats.GetResultBytes());
         SetNonZero(node, "IngressRows", taskStats.GetIngressRows());
         SetNonZero(node, "IngressBytes", taskStats.GetIngressBytes());
+        SetNonZero(node, "IngressDecompressedBytes", taskStats.GetIngressDecompressedBytes());
         SetNonZero(node, "EgressRows", taskStats.GetEgressRows());
         SetNonZero(node, "EgressBytes", taskStats.GetEgressBytes());
 
@@ -2590,6 +2571,9 @@ TString AddExecStatsToTxPlan(const TString& txPlanJson, const NYql::NDqProto::TD
                 }
                 if ((*stat)->HasIngressBytes()) {
                     FillAggrStat(stats, (*stat)->GetIngressBytes(), "IngressBytes");
+                }
+                if ((*stat)->HasIngressDecompressedBytes()) {
+                    FillAggrStat(stats, (*stat)->GetIngressDecompressedBytes(), "IngressDecompressedBytes");
                 }
                 if ((*stat)->HasEgressRows()) {
                     FillAggrStat(stats, (*stat)->GetEgressRows(), "EgressRows");

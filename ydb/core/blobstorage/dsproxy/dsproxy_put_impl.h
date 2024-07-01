@@ -119,7 +119,7 @@ public:
             std::move(ev->ExtraBlockChecks), true, std::move(ev->ExecutionRelay), ev->Deadline);
 
         auto& blob = Blobs.back();
-        LWPROBE(DSProxyBlobPutTactics, blob.BlobId.TabletID(), Info->GroupID, blob.BlobId.ToString(), Tactic,
+        LWPROBE(DSProxyBlobPutTactics, blob.BlobId.TabletID(), Info->GroupID.GetRawId(), blob.BlobId.ToString(), Tactic,
             NKikimrBlobStorage::EPutHandleClass_Name(GetPutHandleClass()));
     }
 
@@ -149,7 +149,7 @@ public:
                 msg.Deadline);
 
             auto& blob = Blobs.back();
-            LWPROBE(DSProxyBlobPutTactics, blob.BlobId.TabletID(), Info->GroupID, blob.BlobId.ToString(), Tactic,
+            LWPROBE(DSProxyBlobPutTactics, blob.BlobId.TabletID(), Info->GroupID.GetRawId(), blob.BlobId.ToString(), Tactic,
                 NKikimrBlobStorage::EPutHandleClass_Name(GetPutHandleClass()));
         }
 
@@ -186,7 +186,7 @@ public:
     void PrepareOneReply(NKikimrProto::EReplyStatus status, size_t blobIdx, TLogContext &logCtx,
             TString errorReason, TPutResultVec &outPutResults);
 
-    ui64 GetTimeToAccelerateNs(TLogContext &logCtx);
+    ui64 GetTimeToAccelerateNs(TLogContext &logCtx, ui32 nthWorst);
 
     TString DumpFullState() const;
 
@@ -206,7 +206,6 @@ public:
 
     TDeque<TPutEvent> GeneratePutRequests() {
         TDeque<TPutEvent> events;
-
         // Group put requests together by VDiskID.
         std::unordered_multimap<ui32, TDiskPutRequest*> puts;
         for (auto& put : Blackboard.GroupDiskRequests.PutsPending) {

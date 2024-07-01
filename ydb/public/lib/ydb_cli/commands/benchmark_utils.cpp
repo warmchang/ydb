@@ -70,6 +70,7 @@ TTestInfo::TTestInfo(std::vector<TDuration>&& clientTimings, std::vector<TDurati
     RttMean = totalDiff / static_cast<double>(ServerTimings.size());
 
     auto serverTimingsCopy = ServerTimings;
+    Sort(serverTimingsCopy);
     auto centerElement = serverTimingsCopy.begin() + ServerTimings.size() / 2;
     std::nth_element(serverTimingsCopy.begin(), centerElement, serverTimingsCopy.end());
 
@@ -79,6 +80,36 @@ TTestInfo::TTestInfo(std::vector<TDuration>&& clientTimings, std::vector<TDurati
     } else {
         Median = centerElement->MilliSeconds();
     }
+    const auto ubCount = std::max<size_t>(1, serverTimingsCopy.size() * 2 / 3);
+    double ub = 1;
+    for (ui32 i = 0; i < ubCount; ++i) {
+        ub *= serverTimingsCopy[i].MillisecondsFloat();
+    }
+    UnixBench = TDuration::MilliSeconds(pow(ub, 1. / ubCount));
+}
+
+void TTestInfo::operator /=(const ui32 count) {
+    ColdTime /= count;
+    Min /= count;
+    Max /= count;
+    RttMin /= count;
+    RttMax /= count;
+    RttMean /= count;
+    Mean /= count;
+    Median /= count;
+    UnixBench /= count;
+}
+
+void TTestInfo::operator +=(const TTestInfo& other) {
+    ColdTime += other.ColdTime;
+    Min += other.Min;
+    Max += other.Max;
+    RttMin += other.RttMin;
+    RttMax += other.RttMax;
+    RttMean += other.RttMean;
+    Mean += other.Mean;
+    Median += other.Median;
+    UnixBench += other.UnixBench;
 }
 
 TString FullTablePath(const TString& database, const TString& table) {
@@ -106,8 +137,11 @@ bool HasCharsInString(const TString& str) {
 
 class IQueryResultScanner {
 private:
-    TString ErrorInfo;
-    TDuration ServerTiming;
+    YDB_READONLY_DEF(TString, ErrorInfo);
+    YDB_READONLY_DEF(TDuration, ServerTiming);
+    YDB_READONLY_DEF(TString, QueryPlan);
+    YDB_READONLY_DEF(TString, PlanAst);
+
 public:
     virtual ~IQueryResultScanner() = default;
     virtual void OnStart(const TVector<NYdb::TColumn>& columns) = 0;
@@ -117,12 +151,6 @@ public:
     virtual void OnFinish() = 0;
     void OnError(const TString& info) {
         ErrorInfo = info;
-    }
-    const TString& GetErrorInfo() const {
-        return ErrorInfo;
-    }
-    TDuration GetServerTiming() const {
-        return ServerTiming;
     }
 
     template <typename TIterator>
@@ -139,12 +167,16 @@ public:
 
             if constexpr (std::is_same_v<TIterator, NTable::TScanQueryPartIterator>) {
                 if (streamPart.HasQueryStats()) {
-                    ServerTiming = streamPart.GetQueryStats().GetTotalDuration();
+                    ServerTiming += streamPart.GetQueryStats().GetTotalDuration();
+                    QueryPlan = streamPart.GetQueryStats().GetPlan().GetOrElse("");
+                    PlanAst = streamPart.GetQueryStats().GetAst().GetOrElse("");
                 }
             } else {
                 const auto& stats = streamPart.GetStats();
                 if (stats) {
-                    ServerTiming = stats->GetTotalDuration();
+                    ServerTiming += stats->GetTotalDuration();
+                    QueryPlan = stats->GetPlan().GetOrElse("");
+                    PlanAst = stats->GetAst().GetOrElse("");
                 }
             }
 
@@ -255,7 +287,7 @@ public:
 
 TQueryBenchmarkResult Execute(const TString& query, NTable::TTableClient& client) {
     TStreamExecScanQuerySettings settings;
-    settings.CollectQueryStats(ECollectQueryStatsMode::Basic);
+    settings.CollectQueryStats(ECollectQueryStatsMode::Full);
     auto it = client.StreamExecuteScanQuery(query, settings).GetValueSync();
     ThrowOnError(it);
 
@@ -267,13 +299,19 @@ TQueryBenchmarkResult Execute(const TString& query, NTable::TTableClient& client
     if (!composite.Scan(it)) {
         return TQueryBenchmarkResult::Error(composite.GetErrorInfo());
     } else {
-        return TQueryBenchmarkResult::Result(scannerYson->GetResult(), *scannerCSV, composite.GetServerTiming());
+        return TQueryBenchmarkResult::Result(
+            scannerYson->GetResult(),
+            *scannerCSV,
+            composite.GetServerTiming(),
+            composite.GetQueryPlan(),
+            composite.GetPlanAst()
+            );
     }
 }
 
 TQueryBenchmarkResult Execute(const TString& query, NQuery::TQueryClient& client) {
     NQuery::TExecuteQuerySettings settings;
-    settings.StatsMode(NQuery::EStatsMode::Basic);
+    settings.StatsMode(NQuery::EStatsMode::Full);
     auto it = client.StreamExecuteQuery(
         query,
         NYdb::NQuery::TTxControl::BeginTx().CommitTx(),
@@ -288,7 +326,13 @@ TQueryBenchmarkResult Execute(const TString& query, NQuery::TQueryClient& client
     if (!composite.Scan(it)) {
         return TQueryBenchmarkResult::Error(composite.GetErrorInfo());
     } else {
-        return TQueryBenchmarkResult::Result(scannerYson->GetResult(), *scannerCSV, composite.GetServerTiming());
+        return TQueryBenchmarkResult::Result(
+            scannerYson->GetResult(),
+            *scannerCSV,
+            composite.GetServerTiming(),
+            composite.GetQueryPlan(),
+            composite.GetPlanAst()
+            );
     }
 }
 

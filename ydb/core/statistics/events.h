@@ -30,7 +30,7 @@ enum EStatType {
 
 struct TRequest {
     TPathId PathId;
-    std::optional<TString> ColumnName; // not used for simple stat
+    std::optional<ui32> ColumnTag; // not used for simple stat
 };
 
 struct TResponse {
@@ -71,6 +71,13 @@ struct TEvStatistics {
 
         EvDeleteStatisticsQueryResponse,
 
+        EvScanTableAccepted,
+        EvGetScanStatus,
+        EvGetScanStatusResponse,
+
+        EvStatisticsRequest,
+        EvStatisticsResponse,
+
         EvEnd
     };
 
@@ -83,7 +90,7 @@ struct TEvStatistics {
         bool Success = true;
         std::vector<TResponse> StatResponses;
     };
-    
+
     struct TEvConfigureAggregator : public TEventPB<
         TEvConfigureAggregator,
         NKikimrStat::TEvConfigureAggregator,
@@ -174,12 +181,41 @@ struct TEvStatistics {
         EvScanTable>
     {};
 
+    struct TEvScanTableAccepted : public TEventPB<
+        TEvScanTableAccepted,
+        NKikimrStat::TEvScanTableAccepted,
+        EvScanTableAccepted>
+    {};
+
     struct TEvScanTableResponse : public TEventPB<
         TEvScanTableResponse,
         NKikimrStat::TEvScanTableResponse,
         EvScanTableResponse>
     {};
 
+    struct TEvGetScanStatus : public TEventPB<
+        TEvGetScanStatus,
+        NKikimrStat::TEvGetScanStatus,
+        EvGetScanStatus>
+    {};
+
+    struct TEvGetScanStatusResponse : public TEventPB<
+        TEvGetScanStatusResponse,
+        NKikimrStat::TEvGetScanStatusResponse,
+        EvGetScanStatusResponse>
+    {};
+
+    struct TEvStatisticsRequest : public TEventPB<
+        TEvStatisticsRequest,
+        NKikimrStat::TEvStatisticsRequest,
+        EvStatisticsRequest>
+    {};
+
+    struct TEvStatisticsResponse : public TEventPB<
+        TEvStatisticsResponse,
+        NKikimrStat::TEvStatisticsResponse,
+        EvStatisticsResponse>
+    {};
 };
 
 } // NStat

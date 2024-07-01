@@ -9,8 +9,6 @@ bool TTxInsertTableCleanup::Execute(TTransactionContext& txc, const TActorContex
     NOlap::TDbWrapper dbTable(txc.DB, &dsGroupSelector);
     NIceDb::TNiceDb db(txc.DB);
 
-    Self->TryAbortWrites(db, dbTable, std::move(WriteIdsToAbort));
-
     NOlap::TBlobManagerDb blobManagerDb(txc.DB);
     auto allAborted = Self->InsertTable->GetAborted();
     auto storage = Self->StoragesManager->GetInsertOperator();
@@ -31,7 +29,7 @@ void TTxInsertTableCleanup::Complete(const TActorContext& /*ctx*/) {
     Y_ABORT_UNLESS(BlobsAction);
     BlobsAction->OnCompleteTxAfterRemoving(true);
     Self->BackgroundController.FinishCleanupInsertTable();
-    Self->EnqueueBackgroundActivities();
+    Self->SetupCleanupInsertTable();
 }
 
 }

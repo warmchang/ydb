@@ -16,6 +16,7 @@
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
 
+#include <util/generic/algorithm.h>
 #include <util/generic/size_literals.h>
 #include <util/string/join.h>
 #include <util/string/printf.h>
@@ -2760,6 +2761,49 @@ Y_UNIT_TEST_SUITE(Cdc) {
         });
     }
 
+    Y_UNIT_TEST(InitialScanRacyCompleteAndRequest) {
+        TPortManager portManager;
+        TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
+            .SetUseRealThreads(false)
+            .SetDomainName("Root")
+            .SetEnableChangefeedInitialScan(true)
+        );
+
+        auto& runtime = *server->GetRuntime();
+        const auto edgeActor = runtime.AllocateEdgeActor();
+
+        SetupLogging(runtime);
+        InitRoot(server, edgeActor);
+        CreateShardedTable(server, edgeActor, "/Root", "Table", SimpleTable());
+
+        std::unique_ptr<IEventHandle> doneResponse;
+        auto blockDone = runtime.AddObserver<TEvDataShard::TEvCdcStreamScanResponse>(
+            [&](TEvDataShard::TEvCdcStreamScanResponse::TPtr& ev) {
+                if (ev->Get()->Record.GetStatus() == NKikimrTxDataShard::TEvCdcStreamScanResponse::DONE) {
+                    doneResponse.reset(ev.Release());
+                }
+            }
+        );
+
+        WaitTxNotification(server, edgeActor, AsyncAlterAddStream(server, "/Root", "Table",
+            WithInitialScan(Updates(NKikimrSchemeOp::ECdcStreamFormatJson))));
+        WaitFor(runtime, [&]{ return bool(doneResponse); }, "doneResponse");
+        blockDone.Remove();
+
+        bool done = false;
+        auto waitDone = runtime.AddObserver<TEvDataShard::TEvCdcStreamScanResponse>(
+            [&](TEvDataShard::TEvCdcStreamScanResponse::TPtr& ev) {
+                if (ev->Get()->Record.GetStatus() == NKikimrTxDataShard::TEvCdcStreamScanResponse::DONE) {
+                    done = true;
+                }
+            }
+        );
+
+        const auto& record = doneResponse->Get<TEvDataShard::TEvCdcStreamScanResponse>()->Record;
+        RebootTablet(runtime, record.GetTablePathId().GetOwnerId(), edgeActor);
+        WaitFor(runtime, [&]{ return done; }, "done");
+    }
+
     Y_UNIT_TEST(InitialScanUpdatedRows) {
         TPortManager portManager;
         TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
@@ -3228,6 +3272,45 @@ Y_UNIT_TEST_SUITE(Cdc) {
             R"({"resolved":"***"})",
             R"({"resolved":"***"})",
         });
+    }
+
+    Y_UNIT_TEST(ResolvedTimestampsMultiplePartitions) {
+        TPortManager portManager;
+        TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
+            .SetUseRealThreads(false)
+            .SetDomainName("Root")
+        );
+
+        auto& runtime = *server->GetRuntime();
+        const auto edgeActor = runtime.AllocateEdgeActor();
+
+        SetupLogging(runtime);
+        InitRoot(server, edgeActor);
+        CreateShardedTable(server, edgeActor, "/Root", "Table", TShardedTableOptions().Shards(2));
+
+        WaitTxNotification(server, edgeActor, AsyncAlterAddStream(server, "/Root", "Table",
+            WithResolvedTimestamps(TDuration::Seconds(3), Updates(NKikimrSchemeOp::ECdcStreamFormatJson))));
+
+        TVector<TVector<std::pair<TString, TString>>> records(2); // partition to records
+        while (true) {
+            for (ui32 i = 0; i < records.size(); ++i) {
+                records[i] = GetRecords(*server->GetRuntime(), edgeActor, "/Root/Table/Stream", i);
+            }
+
+            if (AllOf(records, [](const auto& x) { return !x.empty(); })) {
+                break;
+            }
+
+            SimulateSleep(server, TDuration::Seconds(1));
+        }
+
+        UNIT_ASSERT(records.size() > 1);
+        UNIT_ASSERT(!records[0].empty());
+        AssertJsonsEqual(records[0][0].second, R"({"resolved":"***"})");
+
+        for (ui32 i = 1; i < records.size(); ++i) {
+            UNIT_ASSERT_VALUES_EQUAL(records[i][0].second, records[0][0].second);
+        }
     }
 
     Y_UNIT_TEST(InitialScanAndResolvedTimestamps) {

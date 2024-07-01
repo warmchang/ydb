@@ -33,6 +33,9 @@ void TTable::AddTuple(  ui64 * intColumns, char ** stringColumns, ui32 * strings
     // Processing variable length string columns
     if ( NumberOfKeyStringColumns != 0 || NumberOfKeyIColumns != 0) {
 
+        totalBytesForStrings += sizeof(ui32)*NumberOfKeyStringColumns;
+        totalBytesForStrings += sizeof(ui32)*NumberOfKeyIColumns;
+
         for( ui64 i = 0; i < NumberOfKeyStringColumns; i++ ) {
             totalBytesForStrings += stringsSizes[i];
         }
@@ -55,11 +58,15 @@ void TTable::AddTuple(  ui64 * intColumns, char ** stringColumns, ui32 * strings
         char * currStrPtr = reinterpret_cast< char* > (startPtr);
 
         for( ui64 i = 0; i < NumberOfKeyStringColumns; i++) {
+            WriteUnaligned<ui32>(currStrPtr, stringsSizes[i] );
+            currStrPtr+=sizeof(ui32);
             std::memcpy(currStrPtr, stringColumns[i], stringsSizes[i] );
             currStrPtr+=stringsSizes[i];
         }
 
         for( ui64 i = 0; i < NumberOfKeyIColumns; i++) {
+            WriteUnaligned<ui32>(currStrPtr, IColumnsVals[i].size() );
+            currStrPtr+=sizeof(ui32);
             std::memcpy(currStrPtr, IColumnsVals[i].data(), IColumnsVals[i].size() );
             currStrPtr+=IColumnsVals[i].size();
         }
@@ -214,13 +221,15 @@ inline bool CompareIColumns(    const ui32* stringSizes1, const char * vals1,
     for (ui32 i = 0; i < nStringColumns; i ++) {
         currSize1 = *(stringSizes1 + i);
         currSize2 = *(stringSizes2 + i);
-        currOffset1 += currSize1;
-        currOffset2 += currSize2;
+        currOffset1 += currSize1 + sizeof(ui32);
+        currOffset2 += currSize2 + sizeof(ui32);
     }
     for (ui32 i = 0; i < nIColumns; i ++) {
 
         currSize1 = *(stringSizes1 + nStringColumns + i );
         currSize2 = *(stringSizes2 + nStringColumns + i );
+        currOffset1 += sizeof(ui32);
+        currOffset2 += sizeof(ui32);
         str1 = TStringBuf(vals1 + currOffset1, currSize1);
         val1 = (colInterfaces + i)->Packer->Unpack(str1, colInterfaces->HolderFactory);
         str2 = TStringBuf(vals2 + currOffset2, currSize2 );
@@ -277,7 +286,7 @@ void TTable::Join( TTable & t1, TTable & t2, EJoinKind joinKind, bool hasMoreLef
 
     IsTableJoined = true;
 
-    if (joinKind == EJoinKind::Cross) return;
+    MKQL_ENSURE(joinKind != EJoinKind::Cross, "Cross Join is not allowed in Grace Join");
 
     if ( JoinKind == EJoinKind::Right || JoinKind == EJoinKind::RightOnly || JoinKind == EJoinKind::RightSemi ) {
         std::swap(JoinTable1, JoinTable2);
@@ -599,13 +608,17 @@ inline void TTable::GetTupleData(ui32 bucketNum, ui32 tupleId, TupleData & td) {
 
         for (ui64 i = 0; i < NumberOfKeyStringColumns; ++i)
         {
-            td.StrColumns[i] = strPtr;
             td.StrSizes[i] = tb.StringsOffsets[stringsOffsetsIdx + 2 + i];
+            Y_ENSURE(ReadUnaligned<ui32>(strPtr) == td.StrSizes[i]);
+            strPtr += sizeof(ui32);
+            td.StrColumns[i] = strPtr;
             strPtr += td.StrSizes[i];
         }
 
         for ( ui64 i = 0; i < NumberOfKeyIColumns; i++) {
             ui32 currSize = tb.StringsOffsets[stringsOffsetsIdx + 2 + NumberOfKeyStringColumns + i];
+            Y_ENSURE(ReadUnaligned<ui32>(strPtr) == currSize);
+            strPtr += sizeof(ui32);
             *(td.IColumns + i) = (ColInterfaces + i)->Packer->Unpack(TStringBuf(strPtr, currSize), ColInterfaces->HolderFactory);
             strPtr += currSize;
         }
@@ -768,31 +781,6 @@ inline bool HasRightIdMatch(ui64 currId, ui64 & rightIdIter, const std::vector<u
 
 
 bool TTable::NextJoinedData( TupleData & td1, TupleData & td2, ui64 bucketLimit) {
-
-    if (JoinKind == EJoinKind::Cross) {
-
-        if (HasMoreTuples(JoinTable1->TableBucketsStats, JoinTable1->CurrIterBucket, JoinTable1->CurrIterIndex, bucketLimit))
-        {
-            JoinTable1->GetTupleData(JoinTable1->CurrIterBucket, JoinTable1->CurrIterIndex, td1);
-
-            if (HasMoreTuples(JoinTable2->TableBucketsStats, JoinTable2->CurrIterBucket, JoinTable2->CurrIterIndex, bucketLimit))
-            {
-                JoinTable2->GetTupleData(JoinTable2->CurrIterBucket, JoinTable2->CurrIterIndex, td2);
-                JoinTable2->CurrIterIndex++;
-                return true;
-            }
-            else
-            {
-                JoinTable2->CurrIterBucket = 0;
-                JoinTable2->CurrIterIndex = 0;
-                JoinTable1->CurrIterIndex++;
-                return NextJoinedData(td1, td2, bucketLimit);
-            }
-        }
-        else
-            return false;
-    }
-
     if ( JoinKind == EJoinKind::Inner ) {
         while(HasMoreTuples(JoinTable1->TableBucketsStats, JoinTable1->CurrIterBucket, JoinTable1->CurrIterIndex, bucketLimit)) {
             ui32 tupleId2;
@@ -1078,6 +1066,12 @@ bool TTable::NextJoinedData( TupleData & td1, TupleData & td2, ui64 bucketLimit)
 
         td1.AllNulls = true;
 
+        if (!Table2Initialized_) {
+            CurrIterBucket = 0;
+            CurrJoinIdsIterIndex = 0;
+            Table2Initialized_ = true;
+        }
+
         while (HasMoreTuples(JoinTable2->TableBucketsStats, JoinTable2->CurrIterBucket, JoinTable2->CurrIterIndex, bucketLimit)) {
 
             if (CurrIterBucket != JoinTable2->CurrIterBucket) {
@@ -1126,6 +1120,18 @@ void TTable::ClearBucket(ui64 bucket) {
     tbs.TuplesNum = 0;
     tbs.KeyIntValsTotalSize = 0;
     tbs.StringValuesTotalSize = 0;
+}
+
+void TTable::ShrinkBucket(ui64 bucket) {
+    TTableBucket & tb = TableBuckets[bucket];
+    tb.KeyIntVals.shrink_to_fit();
+    tb.DataIntVals.shrink_to_fit();
+    tb.StringsOffsets.shrink_to_fit();
+    tb.StringsValues.shrink_to_fit();
+    tb.InterfaceValues.shrink_to_fit();
+    tb.InterfaceOffsets.shrink_to_fit();
+    tb.JoinIds.shrink_to_fit();
+    tb.RightIds.shrink_to_fit();
 }
 
 void TTable::InitializeBucketSpillers(ISpiller::TPtr spiller) {

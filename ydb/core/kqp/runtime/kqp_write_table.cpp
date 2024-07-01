@@ -19,7 +19,7 @@ namespace NKqp {
 namespace {
 
 constexpr ui64 MaxBatchBytes = 8_MB;
-constexpr ui64 MaxUnshardedBatchBytes = 8_MB;
+constexpr ui64 MaxUnshardedBatchBytes = 4_MB;
 
 TVector<TSysTables::TTableColumnInfo> BuildColumns(const TConstArrayRef<NKikimrKqp::TKqpColumnMetadataProto> inputColumns) {
     TVector<TSysTables::TTableColumnInfo> result;
@@ -49,11 +49,18 @@ std::vector<ui32> BuildWriteIndex(
     YQL_ENSURE(schemeEntry.ColumnTableInfo->Description.HasSchema());
     const auto& columns = schemeEntry.ColumnTableInfo->Description.GetSchema().GetColumns();
 
+    THashSet<ui32> inputColumnsIds;
+    for (const auto& column : inputColumns) {
+        inputColumnsIds.insert(column.GetId());
+    }
+
     THashMap<ui32, ui32> writeColumnIdToIndex;
     {
         i32 number = 0;
         for (const auto& column : columns) {
-            writeColumnIdToIndex[column.GetId()] = number++;
+            if (inputColumnsIds.contains(column.GetId())) {
+                writeColumnIdToIndex[column.GetId()] = number++;
+            }
         }
     }
 
@@ -72,16 +79,22 @@ std::vector<ui32> BuildWriteIndexKeyFirst(
     const TConstArrayRef<NKikimrKqp::TKqpColumnMetadataProto> inputColumns) {
     const auto& columns = schemeEntry.Columns;
 
+    THashSet<ui32> inputColumnsIds;
+    for (const auto& column : inputColumns) {
+        inputColumnsIds.insert(column.GetId());
+    }
+
     THashMap<ui32, ui32> writeColumnIdToIndex;
     {
         for (const auto& [index, column] : columns) {
             if (column.KeyOrder >= 0) {
                 writeColumnIdToIndex[column.Id] = column.KeyOrder;
+                YQL_ENSURE(inputColumnsIds.contains(column.Id));
             }
         }
         ui32 number = writeColumnIdToIndex.size();
         for (const auto& [index, column] : columns) {
-            if (column.KeyOrder < 0) {
+            if (column.KeyOrder < 0 && inputColumnsIds.contains(column.Id)) {
                 writeColumnIdToIndex[column.Id] = number++;
             }
         }
@@ -120,18 +133,26 @@ std::set<std::string> BuildNotNullColumns(const TConstArrayRef<NKikimrKqp::TKqpC
 }
 
 std::vector<std::pair<TString, NScheme::TTypeInfo>> BuildBatchBuilderColumns(
-    const NSchemeCache::TSchemeCacheNavigate::TEntry& schemeEntry) {
+    const NSchemeCache::TSchemeCacheNavigate::TEntry& schemeEntry,
+    const TConstArrayRef<NKikimrKqp::TKqpColumnMetadataProto> inputColumns) {
     YQL_ENSURE(schemeEntry.ColumnTableInfo);
     YQL_ENSURE(schemeEntry.ColumnTableInfo->Description.HasSchema());
     const auto& columns = schemeEntry.ColumnTableInfo->Description.GetSchema().GetColumns();
 
+    THashSet<ui32> inputColumnsIds;
+    for (const auto& column : inputColumns) {
+        inputColumnsIds.insert(column.GetId());
+    }
+
     std::vector<std::pair<TString, NScheme::TTypeInfo>> result;
     result.reserve(columns.size());
     for (const auto& column : columns) {
-        Y_ABORT_UNLESS(column.HasTypeId());
-        auto typeInfoMod = NScheme::TypeInfoModFromProtoColumnType(column.GetTypeId(),
-            column.HasTypeInfo() ? &column.GetTypeInfo() : nullptr);
-        result.emplace_back(column.GetName(), typeInfoMod.TypeInfo);
+        if (inputColumnsIds.contains(column.GetId())) {
+            Y_ABORT_UNLESS(column.HasTypeId());
+            auto typeInfoMod = NScheme::TypeInfoModFromProtoColumnType(column.GetTypeId(),
+                column.HasTypeInfo() ? &column.GetTypeInfo() : nullptr);
+            result.emplace_back(column.GetName(), typeInfoMod.TypeInfo);
+        }
     }
     return result;
 }
@@ -193,7 +214,7 @@ public:
         , WriteColumnIds(BuildWriteColumnIds(inputColumns, WriteIndex))
         , BatchBuilder(arrow::Compression::UNCOMPRESSED, BuildNotNullColumns(inputColumns)) {
         TString err;
-        if (!BatchBuilder.Start(BuildBatchBuilderColumns(schemeEntry), 0, 0, err)) {
+        if (!BatchBuilder.Start(BuildBatchBuilderColumns(schemeEntry, inputColumns), 0, 0, err)) {
             yexception() << "Failed to start batch builder: " + err;
         }
 
@@ -489,6 +510,7 @@ public:
         TVector<TCell> cells(Columns.size());
         data.ForEachRow([&](const auto& row) {
             for (size_t index = 0; index < Columns.size(); ++index) {
+                // TODO: move to SerializedVector
                 cells[WriteIndex[index]] = MakeCell(
                     Columns[index].PType,
                     row.GetElement(index),
@@ -506,6 +528,7 @@ public:
         YQL_ENSURE(datashardBatch);
         auto data = datashardBatch->Extract();
         const auto rows = data.size() / Columns.size();
+        YQL_ENSURE(data.size() == rows * Columns.size());
 
         for (size_t rowIndex = 0; rowIndex < rows; ++rowIndex) {
             AddRow(
@@ -633,8 +656,11 @@ class TShardsInfo {
 public:
     class TShardInfo {
         friend class TShardsInfo;
-        TShardInfo(i64& memory)
-            : Memory(memory) {
+        TShardInfo(i64& memory, ui64& nextCookie, bool& closed)
+            : Memory(memory)
+            , NextCookie(nextCookie)
+            , Cookie(NextCookie++)
+            , Closed(closed) {
         }
 
     public:
@@ -652,10 +678,6 @@ public:
 
         bool IsFinished() const {
             return IsClosed() && IsEmpty();
-        }
-
-        void Close() {
-            Closed = true;
         }
 
         void MakeNextBatches(i64 maxDataSize, ui64 maxCount) {
@@ -682,7 +704,7 @@ public:
                     Batches.pop_front();
                 }
 
-                ++Cookie;
+                Cookie = NextCookie++;
                 SendAttempts = 0;
                 BatchesInFlight = 0;
 
@@ -714,12 +736,19 @@ public:
             ++SendAttempts;
         }
 
+        void ResetSendAttempts() {
+            SendAttempts = 0;
+        }
+
     private:
         std::deque<IPayloadSerializer::IBatchPtr> Batches;
-        bool Closed = false;
         i64& Memory;
 
-        ui64 Cookie = 1;
+        ui64& NextCookie;
+        ui64 Cookie;
+
+        bool& Closed;
+
         ui32 SendAttempts = 0;
         size_t BatchesInFlight = 0;
     };
@@ -730,7 +759,7 @@ public:
             return it->second;
         }
 
-        auto [insertIt, _] = ShardsInfo.emplace(shard, TShardInfo(Memory));
+        auto [insertIt, _] = ShardsInfo.emplace(shard, TShardInfo(Memory, NextCookie, Closed));
         return insertIt->second;
     }
 
@@ -777,40 +806,61 @@ public:
     void Clear() {
         ShardsInfo = {};
         Memory = 0;
+        Closed = false;
+    }
+
+    void Close() {
+        Closed = true;
     }
 
 private:
     THashMap<ui64, TShardInfo> ShardsInfo;
     i64 Memory = 0;
+    ui64 NextCookie = 1;
+    bool Closed = false;
 };
 
 class TShardedWriteController : public IShardedWriteController {
 public:
     void OnPartitioningChanged(const NSchemeCache::TSchemeCacheNavigate::TEntry& schemeEntry) override {
-        if (Serializer) {
-            FlushSerializer(true);
-        }
+        BeforePartitioningChanged();
         Serializer = CreateColumnShardPayloadSerializer(
             schemeEntry,
             InputColumnsMetadata,
             TypeEnv);
-        ReshardData();
-        ShardsInfo.Clear();
+        AfterPartitioningChanged();
     }
 
     void OnPartitioningChanged(
         const NSchemeCache::TSchemeCacheNavigate::TEntry& schemeEntry,
         NSchemeCache::TSchemeCacheRequest::TEntry&& partitionsEntry) override {
-        if (Serializer) {
-            FlushSerializer(true);
-        }
+        BeforePartitioningChanged();
         Serializer = CreateDataShardPayloadSerializer(
             schemeEntry,
             std::move(partitionsEntry),
             InputColumnsMetadata,
             TypeEnv);
+        AfterPartitioningChanged();
+    }
+
+    void BeforePartitioningChanged() {
+        if (Serializer) {
+            if (!Closed) {
+                Serializer->Close();
+            }
+            FlushSerializer(true);
+        }
+    }
+
+    void AfterPartitioningChanged() {
+        ShardsInfo.Close();
         ReshardData();
         ShardsInfo.Clear();
+        if (Closed) {
+            Close();
+        } else {
+            FlushSerializer(GetMemory() >= Settings.MemoryLimitTotal);
+        }
     }
 
     void AddData(NMiniKQL::TUnboxedValueBatch&& data) override {
@@ -829,9 +879,7 @@ public:
         Serializer->Close();
         FlushSerializer(true);
         YQL_ENSURE(Serializer->IsFinished());
-        for (auto& [shardId, shardInfo] : ShardsInfo.GetShards()) {
-            shardInfo.Close();
-        }
+        ShardsInfo.Close();
     }
 
     TVector<ui64> GetPendingShards() const override {
@@ -894,6 +942,14 @@ public:
             return;
         }
         shardInfo.IncSendAttempts();
+    }
+
+    void ResetRetries(ui64 shardId, ui64 cookie) override {
+        auto& shardInfo = ShardsInfo.GetShard(shardId);
+        if (shardInfo.IsEmpty() || shardInfo.GetCookie() != cookie) {
+            return;
+        }
+        shardInfo.ResetSendAttempts();
     }
 
     i64 GetMemory() const override {
@@ -959,8 +1015,6 @@ private:
             }
         }
     }
-
-    TString LogPrefix = "ShardedWriteController";
 
     TShardedWriteControllerSettings Settings;
     TVector<NKikimrKqp::TKqpColumnMetadataProto> InputColumnsMetadata;

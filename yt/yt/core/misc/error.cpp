@@ -64,11 +64,6 @@ void FormatValue(TStringBuilderBase* builder, TErrorCode code, TStringBuf spec)
     FormatValue(builder, static_cast<int>(code), spec);
 }
 
-TString ToString(TErrorCode code)
-{
-    return ToStringViaBuilder(code);
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 YT_DEFINE_THREAD_LOCAL(bool, ErrorSanitizerEnabled, false);
@@ -213,6 +208,14 @@ public:
     bool HasTracingAttributes() const
     {
         return TraceId_ != NTracing::InvalidTraceId;
+    }
+
+    void SetTracingAttributes(NTracing::TTracingAttributes tracingAttributes)
+    {
+        YT_VERIFY(!HasTracingAttributes());
+
+        TraceId_ = tracingAttributes.TraceId;
+        SpanId_ = tracingAttributes.SpanId;
     }
 
     NTracing::TTraceId GetTraceId() const
@@ -631,6 +634,14 @@ bool TError::HasTracingAttributes() const
     return Impl_->HasTracingAttributes();
 }
 
+void TError::SetTracingAttributes(NTracing::TTracingAttributes tracingAttributes)
+{
+    if (!Impl_) {
+        return;
+    }
+    Impl_->SetTracingAttributes(tracingAttributes);
+}
+
 NTracing::TTraceId TError::GetTraceId() const
 {
     if (!Impl_) {
@@ -795,13 +806,6 @@ bool TError::IsOK() const
         return true;
     }
     return Impl_->IsOK();
-}
-
-void TError::ThrowOnError() const
-{
-    if (!IsOK()) {
-        THROW_ERROR *this;
-    }
 }
 
 TError TError::Wrap() const &
@@ -1086,13 +1090,6 @@ bool operator == (const TError& lhs, const TError& rhs)
 void FormatValue(TStringBuilderBase* builder, const TError& error, TStringBuf /*spec*/)
 {
     AppendError(builder, error, 0);
-}
-
-TString ToString(const TError& error)
-{
-    TStringBuilder builder;
-    AppendError(&builder, error, 0);
-    return builder.Flush();
 }
 
 void ToProto(NYT::NProto::TError* protoError, const TError& error)

@@ -59,6 +59,7 @@ STFUNC(TController::StateWork) {
         HFunc(TEvPrivate::TEvUpdateTenantNodes, Handle);
         HFunc(TEvPrivate::TEvProcessQueues, Handle);
         HFunc(TEvPrivate::TEvRemoveWorker, Handle);
+        HFunc(TEvPrivate::TEvDescribeTargetsResult, Handle);
         HFunc(TEvDiscovery::TEvDiscoveryData, Handle);
         HFunc(TEvDiscovery::TEvError, Handle);
         HFunc(TEvService::TEvStatus, Handle);
@@ -128,6 +129,11 @@ void TController::Handle(TEvPrivate::TEvDropReplication::TPtr& ev, const TActorC
 }
 
 void TController::Handle(TEvController::TEvDescribeReplication::TPtr& ev, const TActorContext& ctx) {
+    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
+    RunTxDescribeReplication(ev, ctx);
+}
+
+void TController::Handle(TEvPrivate::TEvDescribeTargetsResult::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
     RunTxDescribeReplication(ev, ctx);
 }
@@ -338,19 +344,25 @@ void TController::Handle(TEvService::TEvWorkerStatus::TPtr& ev, const TActorCont
     const auto id = TWorkerId::Parse(record.GetWorker());
 
     switch (record.GetStatus()) {
-    case NKikimrReplication::TEvWorkerStatus::RUNNING:
+    case NKikimrReplication::TEvWorkerStatus::STATUS_RUNNING:
         if (!session.HasWorker(id)) {
             StopQueue.emplace(id, nodeId);
+        } else if (record.GetReason() == NKikimrReplication::TEvWorkerStatus::REASON_INFO) {
+            UpdateLag(id, TDuration::MilliSeconds(record.GetLagMilliSeconds()));
         }
         break;
-    case NKikimrReplication::TEvWorkerStatus::STOPPED:
+    case NKikimrReplication::TEvWorkerStatus::STATUS_STOPPED:
         if (!MaybeRemoveWorker(id, ctx)) {
-            session.DetachWorker(id);
-            if (IsValidWorker(id)) {
-                auto* worker = GetOrCreateWorker(id);
-                worker->ClearSession();
-                if (worker->HasCommand()) {
-                    BootQueue.insert(id);
+            if (record.GetReason() == NKikimrReplication::TEvWorkerStatus::REASON_ERROR) {
+                RunTxWorkerError(id, record.GetErrorDescription(), ctx);
+            } else {
+                session.DetachWorker(id);
+                if (IsValidWorker(id)) {
+                    auto* worker = GetOrCreateWorker(id);
+                    worker->ClearSession();
+                    if (worker->HasCommand()) {
+                        BootQueue.insert(id);
+                    }
                 }
             }
         }
@@ -362,6 +374,20 @@ void TController::Handle(TEvService::TEvWorkerStatus::TPtr& ev, const TActorCont
     }
 
     ScheduleProcessQueues();
+}
+
+void TController::UpdateLag(const TWorkerId& id, TDuration lag) {
+    auto replication = Find(id.ReplicationId());
+    if (!replication) {
+        return;
+    }
+
+    auto* target = replication->FindTarget(id.TargetId());
+    if (!target) {
+        return;
+    }
+
+    target->UpdateLag(id.WorkerId(), lag);
 }
 
 void TController::Handle(TEvService::TEvRunWorker::TPtr& ev, const TActorContext& ctx) {
@@ -577,7 +603,7 @@ void TController::Handle(TEvPrivate::TEvRemoveWorker::TPtr& ev, const TActorCont
 
 void TController::RemoveWorker(const TWorkerId& id, const TActorContext& ctx) {
     LOG_D("Remove worker"
-        << ", workerId# " << id);
+        << ": workerId# " << id);
 
     Y_ABORT_UNLESS(RemoveQueue.contains(id));
 

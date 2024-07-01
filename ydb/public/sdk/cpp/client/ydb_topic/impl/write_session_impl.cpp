@@ -603,6 +603,10 @@ void TWriteSessionImpl::Connect(const TDuration& delay) {
         }
         Cancel(prevConnectTimeoutContext);
 
+        if (Processor) {
+            Processor->Cancel();
+        }
+
         reqSettings = TRpcRequestSettings::Make(Settings, PreferredPartitionLocation.Endpoint);
 
         connectCallback = [cbContext = SelfContext,
@@ -823,6 +827,11 @@ void TWriteSessionImpl::OnReadDone(NYdbGrpc::TGrpcStatus&& grpcStatus, size_t co
             }
         }
     }
+
+    for (auto& event : processResult.Events) {
+        EventsQueue->PushEvent(std::move(event));
+    }
+
     if (doRead)
         ReadFromProcessor();
 
@@ -835,9 +844,6 @@ void TWriteSessionImpl::OnReadDone(NYdbGrpc::TGrpcStatus&& grpcStatus, size_t co
         if (processResult.HandleResult.DoStop) {
             CloseImpl(std::move(errorStatus));
         }
-    }
-    for (auto& event : processResult.Events) {
-        EventsQueue->PushEvent(std::move(event));
     }
     if (needSetValue) {
         InitSeqNoPromise.SetValue(*processResult.InitSeqNo);

@@ -489,6 +489,21 @@ struct TCommonAppOptions {
             nmConfig.SetHost(env.HostName());
         }
 
+         // YQ-3253: derive Connector endpoint from YDB's Interconnect Port
+        if (appConfig.GetQueryServiceConfig().GetGeneric().HasConnector() && InterconnectPort) {
+            auto& connectorConfig = *appConfig.MutableQueryServiceConfig()->MutableGeneric()->MutableConnector();
+            auto offset = connectorConfig.GetOffsetFromIcPort();
+            if (offset) {
+                connectorConfig.MutableEndpoint()->Setport(InterconnectPort + offset) ;
+
+                // Assign default hostname 'localhost', because 
+                // connector is usually deployed to the same host as the dynamic node.
+                if (connectorConfig.GetEndpoint().host().Empty()) {
+                    connectorConfig.MutableEndpoint()->Sethost("localhost");
+                }
+            }
+        }
+
         if (SuppressVersionCheck) {
             if (appConfig.HasNameserviceConfig()) {
                 appConfig.MutableNameserviceConfig()->SetSuppressVersionCheck(true);
@@ -1183,7 +1198,7 @@ public:
         // will be replaced with proper version info
         Labels["branch"] = GetBranch();
         Labels["rev"] = GetProgramCommitId();
-        Labels["dynamic"] = ToString(cf.NodeBrokerAddresses.empty() ? "false" : "true");
+        Labels["dynamic"] = ToString(CommonAppOptions.IsStaticNode() ? "false" : "true");
 
         for (const auto& [name, value] : Labels) {
             auto *label = AppConfig.AddLabels();

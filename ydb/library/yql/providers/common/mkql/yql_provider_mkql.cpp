@@ -754,10 +754,20 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
             return MkqlBuildWideLambda(node.Tail(), ctx, keys);
         };
 
-        if (withLimit)
+        bool isStatePersistable = true;
+        // Traverse through childs skipping input and limit children
+        for (size_t i = 2U; i < node.ChildrenSize(); ++i) {
+            isStatePersistable = isStatePersistable && node.Child(i)->GetTypeAnn()->IsPersistable();
+        }
+
+        if (withLimit) {
             return ctx.ProgramBuilder.WideCombiner(flow, memLimit, keyExtractor, init, update, finish);
-        else
-            return ctx.ProgramBuilder.WideLastCombiner(flow, keyExtractor, init, update, finish);
+        }
+
+        if (isStatePersistable && RuntimeVersion >= 49U) {
+            return ctx.ProgramBuilder.WideLastCombinerWithSpilling(flow, keyExtractor, init, update, finish);
+        }
+        return ctx.ProgramBuilder.WideLastCombiner(flow, keyExtractor, init, update, finish);
     });
 
     AddCallable("WideChopper", [](const TExprNode& node, TMkqlBuildContext& ctx) {
@@ -1152,6 +1162,21 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         const auto value = FromString<i64>(node.Head(), NUdf::EDataSlot::Interval64);
         return ctx.ProgramBuilder.NewDataLiteral<NUdf::EDataSlot::Interval64>(
             NUdf::TStringRef((const char*)&value, sizeof(value)));
+    });
+
+    AddCallable("TzDate32", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto& parts = CutTimezone<i32>(node.Head().Content());
+        return ctx.ProgramBuilder.NewTzDataLiteral<NUdf::TTzDate32>(parts.first, parts.second);
+    });
+
+    AddCallable("TzDatetime64", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto& parts = CutTimezone<i64>(node.Head().Content());
+        return ctx.ProgramBuilder.NewTzDataLiteral<NUdf::TTzDatetime64>(parts.first, parts.second);
+    });
+
+    AddCallable("TzTimestamp64", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto& parts = CutTimezone<i64>(node.Head().Content());
+        return ctx.ProgramBuilder.NewTzDataLiteral<NUdf::TTzTimestamp64>(parts.first, parts.second);
     });
 
     AddCallable("FoldMap", [](const TExprNode& node, TMkqlBuildContext& ctx) {
@@ -1678,6 +1703,14 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         });
 
         const auto returnType = BuildType(node, *node.GetTypeAnn(), ctx.ProgramBuilder);
+
+        // TODO: use PRAGMA
+        bool IsSpillingAllowed = false;
+        if (RuntimeVersion >= 50U && IsSpillingAllowed) {
+            return selfJoin
+                ? ctx.ProgramBuilder.GraceSelfJoinWithSpilling(flowLeft, joinKind, leftKeyColumns, rightKeyColumns, leftRenames, rightRenames, returnType, anyJoinSettings)
+                : ctx.ProgramBuilder.GraceJoinWithSpilling(flowLeft, flowRight, joinKind, leftKeyColumns, rightKeyColumns, leftRenames, rightRenames, returnType, anyJoinSettings);
+        }
         return selfJoin
             ? ctx.ProgramBuilder.GraceSelfJoin(flowLeft, joinKind, leftKeyColumns, rightKeyColumns, leftRenames, rightRenames, returnType, anyJoinSettings)
             : ctx.ProgramBuilder.GraceJoin(flowLeft, flowRight, joinKind, leftKeyColumns, rightKeyColumns, leftRenames, rightRenames, returnType, anyJoinSettings);

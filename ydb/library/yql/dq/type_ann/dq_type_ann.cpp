@@ -139,7 +139,17 @@ TStatus AnnotateStage(const TExprNode::TPtr& stage, TExprContext& ctx) {
             if (TDqConnection::Match(input.Get())) {
                 TDqConnection conn(input);
                 if (TDqStageSettings::Parse(conn.Output().Stage()).WideChannels) {
-                    argType = conn.Output().Stage().Program().Ref().GetTypeAnn();
+                    if (TDqCnStreamLookup::Match(input.Get())) {
+                        auto narrowType = GetSequenceItemType(input->Pos(), input->GetTypeAnn(), false, ctx);
+                        YQL_ENSURE(narrowType->GetKind() == ETypeAnnotationKind::Struct);
+                        TTypeAnnotationNode::TListType items;
+                        for(const auto& item: narrowType->Cast<TStructExprType>()->GetItems()) {
+                            items.push_back(item->GetItemType());
+                        }
+                        argType = ctx.MakeType<TStreamExprType>(ctx.MakeType<TMultiExprType>(items));
+                    } else {
+                        argType = conn.Output().Stage().Program().Ref().GetTypeAnn();
+                    }
                 }
             }
         }
@@ -574,10 +584,8 @@ TStatus AnnotateDqCnStreamLookup(const TExprNode::TPtr& input, TExprContext& ctx
     if (!leftInputType) {
         return TStatus::Error;
     }
-    auto leftRowType = GetSeqItemType(leftInputType);
-
-    const auto rightRowType = input->Child(TDqCnStreamLookup::idx_RightInputRowType)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-
+    const auto leftRowType = GetSeqItemType(leftInputType);
+    const auto rightRowType = GetSeqItemType(cnStreamLookup.RightInput().Raw()->GetTypeAnn());
     const auto outputRowType = GetDqJoinResultType<true>(
         input->Pos(),
         *leftRowType->Cast<TStructExprType>(),
@@ -785,12 +793,13 @@ TStatus AnnotateDqReplicate(const TExprNode::TPtr& input, TExprContext& ctx) {
         }
 
         auto inputTupleType = inputItemType->Cast<TTupleExprType>();
-        if (!EnsureStructType(replicateInput->Pos(), *inputTupleType->GetItems()[0], ctx)) {
+        bool isOptional = false;
+        const TStructExprType* structType = nullptr;
+
+        if (!EnsureStructOrOptionalStructType(replicateInput->Pos(), *inputTupleType->GetItems()[0], isOptional, structType, ctx)) {
             return TStatus::Error;
         }
 
-        bool isOptional = false;
-        const TStructExprType* structType = nullptr;
         if (!EnsureStructOrOptionalStructType(replicateInput->Pos(), *inputTupleType->GetItems()[1], isOptional, structType, ctx)) {
             return TStatus::Error;
         }
@@ -1126,6 +1135,9 @@ bool IsTypeSupportedInMergeCn(EDataSlot type) {
         case EDataSlot::Datetime64:
         case EDataSlot::Timestamp64:
         case EDataSlot::Interval64:
+        case EDataSlot::TzDate32:
+        case EDataSlot::TzDatetime64:
+        case EDataSlot::TzTimestamp64:
             return false;
     }
     return false;

@@ -45,6 +45,7 @@ THashMap<TStringBuf, TPragmaField> CTX_PRAGMA_FIELDS = {
     {"WarnOnAnsiAliasShadowing", &TContext::WarnOnAnsiAliasShadowing},
     {"PullUpFlatMapOverJoin", &TContext::PragmaPullUpFlatMapOverJoin},
     {"FilterPushdownOverJoinOptionalSide", &TContext::FilterPushdownOverJoinOptionalSide},
+    {"RotateJoinTree", &TContext::RotateJoinTree},
     {"DqEngineEnable", &TContext::DqEngineEnable},
     {"DqEngineForce", &TContext::DqEngineForce},
     {"RegexUseRe2", &TContext::PragmaRegexUseRe2},
@@ -60,6 +61,8 @@ THashMap<TStringBuf, TPragmaField> CTX_PRAGMA_FIELDS = {
     {"BlockEngineEnable", &TContext::BlockEngineEnable},
     {"BlockEngineForce", &TContext::BlockEngineForce},
     {"UnorderedResult", &TContext::UnorderedResult},
+    {"CompactNamedExprs", &TContext::CompactNamedExprs},
+    {"ValidateUnusedExprs", &TContext::ValidateUnusedExprs},
 };
 
 typedef TMaybe<bool> TContext::*TPragmaMaybeField;
@@ -359,7 +362,7 @@ TString TContext::AddImport(const TVector<TString>& modulePath) {
     if (!path.StartsWith('/')) {
         path = Settings.FileAliasPrefix + path;
     }
-    
+
     auto iter = ImportModuleAliases.find(path);
     if (iter == ImportModuleAliases.end()) {
         const TString alias = MakeName(TStringBuilder() << modulePath.back() << "_module");
@@ -413,6 +416,9 @@ const TVector<std::pair<TString, TDeferredAtom>>& TScopedState::GetUsedClusters(
 TNodePtr TScopedState::WrapCluster(const TDeferredAtom& cluster, TContext& ctx) {
     auto node = cluster.Build();
     if (!cluster.GetLiteral()) {
+        if (ctx.CompactNamedExprs) {
+            return node->Y("EvaluateAtom", node);
+        }
         AddExprCluster(node, ctx);
         auto exprIt = Local.ExprClustersMap.find(node.Get());
         YQL_ENSURE(exprIt != Local.ExprClustersMap.end());

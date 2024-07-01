@@ -13,6 +13,10 @@
 
 #include <library/cpp/testing/unittest/registar.h>
 
+#include <contrib/libs/protobuf/src/google/protobuf/text_format.h>
+#include <contrib/libs/protobuf/src/google/protobuf/util/field_comparator.h>
+#include <contrib/libs/protobuf/src/google/protobuf/util/message_differencer.h>
+
 namespace NSchemeShardUT_Private {
 namespace NLs {
 
@@ -460,6 +464,13 @@ void IsView(const NKikimrScheme::TEvDescribeSchemeResult& record) {
     UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeView);
 }
 
+void IsResourcePool(const NKikimrScheme::TEvDescribeSchemeResult& record) {
+    UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
+    const auto& pathDescr = record.GetPathDescription();
+    const auto& selfPath = pathDescr.GetSelf();
+    UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeResourcePool);
+}
+
 TCheckFunc CheckColumns(const TString& name, const TSet<TString>& columns, const TSet<TString>& droppedColumns, const TSet<TString> keyColumns,
                         NKikimrSchemeOp::EPathState pathState) {
     return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
@@ -897,6 +908,14 @@ TCheckFunc StreamAwsRegion(const TString& value) {
     };
 }
 
+TCheckFunc StreamInitialScanProgress(ui32 total, ui32 completed) {
+    return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
+        const auto& scanProgress = record.GetPathDescription().GetCdcStreamDescription().GetScanProgress();
+        UNIT_ASSERT_VALUES_EQUAL(total, scanProgress.GetShardsTotal());
+        UNIT_ASSERT_VALUES_EQUAL(completed, scanProgress.GetShardsCompleted());
+    };
+}
+
 TCheckFunc RetentionPeriod(const TDuration& value) {
     return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
         UNIT_ASSERT_VALUES_EQUAL(value.Seconds(), record.GetPathDescription().GetPersQueueGroup()
@@ -1251,9 +1270,22 @@ TCheckFunc ServerlessComputeResourcesMode(NKikimrSubDomains::EServerlessComputeR
     };
 }
 
-void HasOffloadConfigBase(const NKikimrScheme::TEvDescribeSchemeResult& record, TInverseTag inverse) {
+void HasOffloadConfigBase(const NKikimrScheme::TEvDescribeSchemeResult& record, const TString* const config, TInverseTag inverse) {
     UNIT_ASSERT(inverse.Value xor record.GetPathDescription().GetPersQueueGroup()
         .GetPQTabletConfig().HasOffloadConfig());
+
+    if (config) {
+        NKikimrPQ::TOffloadConfig expectedConfig;
+
+        bool parseResult = google::protobuf::TextFormat::ParseFromString(*config, &expectedConfig);
+        UNIT_ASSERT(parseResult);
+
+        google::protobuf::util::MessageDifferencer md;
+        auto fieldComparator = google::protobuf::util::DefaultFieldComparator();
+        md.set_field_comparator(&fieldComparator);
+        auto& givenConfig = record.GetPathDescription().GetPersQueueGroup().GetPQTabletConfig().GetOffloadConfig();
+        UNIT_ASSERT(md.Compare(expectedConfig, givenConfig));
+    }
 }
 
 #undef DESCRIBE_ASSERT_EQUAL

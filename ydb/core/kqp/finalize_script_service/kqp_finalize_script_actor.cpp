@@ -22,17 +22,17 @@ class TScriptFinalizerActor : public TActorBootstrapped<TScriptFinalizerActor> {
 public:
     TScriptFinalizerActor(TEvScriptFinalizeRequest::TPtr request,
         const NKikimrConfig::TQueryServiceConfig& queryServiceConfig,
-        const NKikimrConfig::TMetadataProviderConfig& metadataProviderConfig,
-        const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup)
+        const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup,
+        std::shared_ptr<NYql::NDq::IS3ActorsFactory> s3ActorsFactor)
         : ReplyActor(request->Sender)
         , ExecutionId(request->Get()->Description.ExecutionId)
         , Database(request->Get()->Description.Database)
         , FinalizationStatus(request->Get()->Description.FinalizationStatus)
         , Request(std::move(request))
         , FinalizationTimeout(TDuration::Seconds(queryServiceConfig.GetFinalizeScriptServiceConfig().GetScriptFinalizationTimeoutSeconds()))
-        , MaximalSecretsSnapshotWaitTime(2 * TDuration::Seconds(metadataProviderConfig.GetRefreshPeriodSeconds()))
         , FederatedQuerySetup(federatedQuerySetup)
         , Compressor(queryServiceConfig.GetQueryArtifactsCompressionMethod(), queryServiceConfig.GetQueryArtifactsCompressionMinSize())
+        , S3ActorsFactor(std::move(s3ActorsFactor))
     {}
 
     void CompressScriptArtifacts() const {
@@ -99,7 +99,7 @@ private:
     }
 
     void FetchSecrets() {
-        RegisterDescribeSecretsActor(SelfId(), UserToken, SecretNames, ActorContext().ActorSystem(), MaximalSecretsSnapshotWaitTime);
+        RegisterDescribeSecretsActor(SelfId(), UserToken, SecretNames, ActorContext().ActorSystem());
     }
 
     void Handle(TEvDescribeSecretsResponse::TPtr& ev) {
@@ -166,7 +166,7 @@ private:
             return;
         }
 
-        Register(NYql::NDq::MakeS3ApplicatorActor(
+        Register(S3ActorsFactor->CreateS3ApplicatorActor(
             SelfId(),
             FederatedQuerySetup->HttpGateway,
             CreateGuidAsString(),
@@ -227,9 +227,9 @@ private:
     TEvScriptFinalizeRequest::TPtr Request;
 
     const TDuration FinalizationTimeout;
-    const TDuration MaximalSecretsSnapshotWaitTime;
     const std::optional<TKqpFederatedQuerySetup>& FederatedQuerySetup;
     const NFq::TCompressor Compressor;
+    std::shared_ptr<NYql::NDq::IS3ActorsFactory> S3ActorsFactor;
 
     TString CustomerSuppliedId;
     std::vector<NKqpProto::TKqpExternalSink> Sinks;
@@ -243,9 +243,10 @@ private:
 
 IActor* CreateScriptFinalizerActor(TEvScriptFinalizeRequest::TPtr request,
     const NKikimrConfig::TQueryServiceConfig& queryServiceConfig,
-    const NKikimrConfig::TMetadataProviderConfig& metadataProviderConfig,
-    const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup) {
-    return new TScriptFinalizerActor(std::move(request), queryServiceConfig, metadataProviderConfig, federatedQuerySetup);
+    const std::optional<TKqpFederatedQuerySetup>& federatedQuerySetup,
+    std::shared_ptr<NYql::NDq::IS3ActorsFactory> s3ActorsFactory
+    ) {
+    return new TScriptFinalizerActor(std::move(request), queryServiceConfig, federatedQuerySetup, std::move(s3ActorsFactory));
 }
 
 }  // namespace NKikimr::NKqp

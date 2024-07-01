@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include <yt/yt/core/concurrency/fiber_scheduler_thread.h>
+
 namespace NYT {
 
 using namespace NYTree;
@@ -75,6 +77,8 @@ void TSingletonsConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("tcp_dispatcher", &TThis::TcpDispatcher)
         .DefaultNew();
+    registrar.Parameter("io_dispatcher", &TThis::IODispatcher)
+        .DefaultNew();
     registrar.Parameter("rpc_dispatcher", &TThis::RpcDispatcher)
         .DefaultNew();
     registrar.Parameter("grpc_dispatcher", &TThis::GrpcDispatcher)
@@ -117,10 +121,14 @@ void TSingletonsDynamicConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("spin_lock_slow_path_logging_threshold", &TThis::SpinWaitSlowPathLoggingThreshold)
         .Optional();
+    registrar.Parameter("max_idle_fibers", &TThis::MaxIdleFibers)
+        .Default(NConcurrency::DefaultMaxIdleFibers);
     registrar.Parameter("yt_alloc", &TThis::YTAlloc)
         .Optional();
     registrar.Parameter("tcp_dispatcher", &TThis::TcpDispatcher)
         .DefaultNew();
+    registrar.Parameter("io_dispatcher", &TThis::IODispatcher)
+        .Optional();
     registrar.Parameter("rpc_dispatcher", &TThis::RpcDispatcher)
         .DefaultNew();
     registrar.Parameter("logging", &TThis::Logging)
@@ -128,7 +136,7 @@ void TSingletonsDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("jaeger", &TThis::Jaeger)
         .DefaultNew();
     registrar.Parameter("tracing_transport", &TThis::TracingTransport)
-        .DefaultNew();
+        .Optional();
     registrar.Parameter("tcmalloc", &TThis::TCMalloc)
         .Optional();
     registrar.Parameter("protobuf_interop", &TThis::ProtobufInterop)

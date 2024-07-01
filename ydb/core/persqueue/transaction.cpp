@@ -1,5 +1,6 @@
 #include "transaction.h"
 #include "utils.h"
+#include "partition_log.h"
 
 namespace NKikimr::NPQ {
 
@@ -60,6 +61,10 @@ void TDistributedTransaction::InitPartitions(const google::protobuf::RepeatedPtr
     Partitions.clear();
 
     for (auto& o : operations) {
+        if (!o.HasBegin()) {
+            HasWriteOperations = true;
+        }
+
         Operations.push_back(o);
         Partitions.insert(o.GetPartitionId());
     }
@@ -133,7 +138,7 @@ void TDistributedTransaction::OnProposeTransaction(const NKikimrPQ::TDataTransac
 
     InitPartitions(txBody.GetOperations());
 
-    if (txBody.HasWriteId()) {
+    if (txBody.HasWriteId() && HasWriteOperations) {
         WriteId = txBody.GetWriteId();
     } else {
         WriteId = Nothing();
@@ -318,6 +323,8 @@ void TDistributedTransaction::AddCmdWrite(NKikimrClient::TKeyValueRequest& reque
 
     Y_ABORT_UNLESS(SourceActor != TActorId());
     ActorIdToProto(SourceActor, tx.MutableSourceActor());
+
+    PQ_LOG_D("save tx " << tx.DebugString());
 
     TString value;
     Y_ABORT_UNLESS(tx.SerializeToString(&value));

@@ -490,17 +490,18 @@ class StaticConfigGenerator(object):
 
         if self._yaml_config_enabled:
             normalized_config['yaml_config_enabled'] = True
-        
+
         return normalized_config
 
     def get_yaml_format_config(self, normalized_config):
         return yaml.safe_dump(normalized_config, sort_keys=True, default_flow_style=False, indent=2)
 
     def get_yaml_format_dynconfig(self, normalized_config):
+        cluster_uuid = normalized_config.get('nameservice_config', {}).get('cluster_uuid', '')
         dynconfig = {
             'metadata': {
                 'kind': 'MainConfig',
-                'cluster': normalized_config['nameservice_config']['cluster_uuid'],
+                'cluster': cluster_uuid,
                 'version': 0,
             },
             'config': copy.deepcopy(normalized_config),

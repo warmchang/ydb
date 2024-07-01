@@ -93,6 +93,7 @@ class TJsonNodes : public TViewerPipeClient<TJsonNodes> {
     TNodeId MaxAllowedNodeId = std::numeric_limits<TNodeId>::max();
     ui32 RequestsBeforeNodeList = 0;
     ui64 HiveId = 0;
+    std::optional<ui64> MaximumDisksPerNode;
 
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -372,6 +373,18 @@ public:
                 for (const NKikimrBlobStorage::TBaseConfig::TGroup& group : pbConfig.GetGroup()) {
                     BaseConfigGroupIndex[group.GetGroupId()] = &group;
                 }
+                std::unordered_map<TNodeId, int> disksPerNode;
+                disksPerNode.reserve(pbConfig.NodeSize());
+                for (const NKikimrBlobStorage::TBaseConfig::TPDisk& pdisk : pbConfig.GetPDisk()) {
+                    disksPerNode[pdisk.GetNodeId()]++;
+                }
+                int maximumDisksPerNode = 0;
+                for (const auto& [nodeId, disks] : disksPerNode) {
+                    if (disks > maximumDisksPerNode) {
+                        maximumDisksPerNode = disks;
+                    }
+                }
+                MaximumDisksPerNode = maximumDisksPerNode;
             }
         }
         if (ResolveGroupsToNodes) {
@@ -736,6 +749,9 @@ public:
             }
         }
 
+        bool noDC = true;
+        bool noRack = true;
+
         for (TNodeId nodeId : NodeIds) {
             if (!CheckNodeFilters(nodeId)) {
                 continue;
@@ -785,6 +801,19 @@ public:
                         tabletInfo = std::move(viewerTabletInfo);
                     }
                 }
+            }
+
+            if (!nodeInfo.GetSystemState().GetLocation().GetDataCenter().empty()) {
+                noDC = false;
+            }
+            if (nodeInfo.GetSystemState().GetSystemLocation().GetDataCenter() != 0) {
+                noDC = false;
+            }
+            if (!nodeInfo.GetSystemState().GetLocation().GetRack().empty()) {
+                noRack = false;
+            }
+            if (nodeInfo.GetSystemState().GetSystemLocation().GetRack() != 0) {
+                noRack = false;
             }
         }
 
@@ -865,6 +894,16 @@ public:
                     });
                 }
             }
+        }
+
+        if (MaximumDisksPerNode.has_value()) {
+            result.SetMaximumDisksPerNode(MaximumDisksPerNode.value());
+        }
+        if (noDC) {
+            result.SetNoDC(true);
+        }
+        if (noRack) {
+            result.SetNoRack(true);
         }
 
         TStringStream json;

@@ -61,8 +61,6 @@
 
 #include <ydb/library/login/login.h>
 
-#include <ydb/services/bg_tasks/service.h>
-
 #include <util/generic/ptr.h>
 
 namespace NKikimr::NSchemeShard::NBackground {
@@ -251,8 +249,9 @@ public:
     THashMap<TPathId, TExternalTableInfo::TPtr> ExternalTables;
     THashMap<TPathId, TExternalDataSourceInfo::TPtr> ExternalDataSources;
     THashMap<TPathId, TViewInfo::TPtr> Views;
+    THashMap<TPathId, TResourcePoolInfo::TPtr> ResourcePools;
 
-    TTempTablesState TempTablesState;
+    TTempDirsState TempDirsState;
 
     TTablesStorage ColumnTables;
     std::shared_ptr<NKikimr::NOlap::NBackground::TSessionsManager> BackgroundSessionsManager;
@@ -295,7 +294,18 @@ public:
 
     TBackgroundCleaningStarter BackgroundCleaningStarter;
     TBackgroundCleaningQueue* BackgroundCleaningQueue = nullptr;
-    THashMap<TTxId, TPathId> BackgroundCleaningTxs;
+
+    struct TBackgroundCleaningState {
+        THashSet<TTxId> TxIds;
+        TVector<NKikimr::TPathId> DirsToRemove;
+
+        size_t ObjectsToDrop = 0;
+        size_t ObjectsDropped = 0;
+
+        bool NeedToRetryLater = false;
+    };
+    THashMap<TPathId, TBackgroundCleaningState> BackgroundCleaningState;
+    THashMap<TTxId, TPathId> BackgroundCleaningTxToDirPathId;
     NKikimrConfig::TBackgroundCleaningConfig::TRetrySettings BackgroundCleaningRetrySettings;
 
     // shardIdx -> clientId
@@ -315,6 +325,7 @@ public:
     bool EnableAddColumsWithDefaults = false;
     bool EnableReplaceIfExistsForExternalEntities = false;
     bool EnableTempTables = false;
+    bool EnableTableDatetime64 = false;
 
     TShardDeleter ShardDeleter;
 
@@ -327,7 +338,9 @@ public:
     TActorId SysPartitionStatsCollector;
 
     TActorId TabletMigrator;
+
     TActorId CdcStreamScanFinalizer;
+    ui32 MaxCdcInitialScanShardsInFlight = 10;
 
     TDuration StatsMaxExecuteTime;
     TDuration StatsBatchTimeout;
@@ -666,7 +679,7 @@ public:
     void PersistRemovePersQueueGroup(NIceDb::TNiceDb &db, TPathId pathId);
     void PersistAddPersQueueGroupAlter(NIceDb::TNiceDb &db, TPathId pathId, const TTopicInfo::TPtr);
     void PersistRemovePersQueueGroupAlter(NIceDb::TNiceDb &db, TPathId pathId);
-    void PersistPersQueue(NIceDb::TNiceDb &db, TPathId pathId, TShardIdx shardIdx, const TTopicTabletInfo::TTopicPartitionInfo& pqInfo);
+    void PersistPersQueue(NIceDb::TNiceDb &db, TPathId pathId, TShardIdx shardIdx, const TTopicTabletInfo::TTopicPartitionInfo& partitionInfo);
     void PersistRemovePersQueue(NIceDb::TNiceDb &db, TPathId pathId, ui32 pqId);
     void PersistRtmrVolume(NIceDb::TNiceDb &db, TPathId pathId, const TRtmrVolumeInfo::TPtr rtmrVol);
     void PersistRemoveRtmrVolume(NIceDb::TNiceDb &db, TPathId pathId);
@@ -797,6 +810,10 @@ public:
     void PersistView(NIceDb::TNiceDb &db, TPathId pathId);
     void PersistRemoveView(NIceDb::TNiceDb& db, TPathId pathId);
 
+    // ResourcePool
+    void PersistResourcePool(NIceDb::TNiceDb& db, TPathId pathId, const TResourcePoolInfo::TPtr resourcePool);
+    void PersistRemoveResourcePool(NIceDb::TNiceDb& db, TPathId pathId);
+
     TTabletId GetGlobalHive(const TActorContext& ctx) const;
 
     enum class EHiveSelection : uint8_t {
@@ -869,7 +886,7 @@ public:
 
     void EnqueueBackgroundCleaning(const TPathId& pathId);
     void RemoveBackgroundCleaning(const TPathId& pathId);
-    std::optional<TTempTableInfo> ResolveTempTableInfo(const TPathId& pathId);
+    std::optional<TTempDirInfo> ResolveTempDirInfo(const TPathId& pathId);
 
     void UpdateShardMetrics(const TShardIdx& shardIdx, const TPartitionStats& newStats);
     void RemoveShardMetrics(const TShardIdx& shardIdx);
@@ -886,6 +903,7 @@ public:
     void UpdateBorrowedCompactionQueueMetrics();
 
     NOperationQueue::EStartStatus StartBackgroundCleaning(const TPathId& pathId);
+    bool ContinueBackgroundCleaning(const TPathId& pathId);
     void OnBackgroundCleaningTimeout(const TPathId& pathId);
     void Handle(TEvInterconnect::TEvNodeDisconnected::TPtr& ev, const TActorContext& ctx);
     bool CheckOwnerUndelivered(TEvents::TEvUndelivered::TPtr& ev);
@@ -894,7 +912,8 @@ public:
     void HandleBackgroundCleaningTransactionResult(
         TEvSchemeShard::TEvModifySchemeTransactionResult::TPtr& result);
     void HandleBackgroundCleaningCompletionResult(const TTxId& txId);
-    void ClearTempTablesState();
+    void CleanBackgroundCleaningState(const TPathId& pathId);
+    void ClearTempDirsState();
 
     struct TTxCleanDroppedSubDomains;
     NTabletFlatExecutor::ITransaction* CreateTxCleanDroppedSubDomains();
@@ -1012,7 +1031,7 @@ public:
 
     void Handle(NKikimr::NOlap::NBackground::TEvExecuteGeneralLocalTransaction::TPtr& ev, const TActorContext& ctx);
     void Handle(NKikimr::NOlap::NBackground::TEvRemoveSession::TPtr& ev, const TActorContext& ctx);
-    
+
 
     void Handle(TEvSchemeShard::TEvInitRootShard::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvSchemeShard::TEvInitTenantSchemeShard::TPtr &ev, const TActorContext &ctx);
@@ -1041,7 +1060,6 @@ public:
     void Handle(TEvHive::TEvUpdateDomainReply::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvPersQueue::TEvDropTabletReply::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvColumnShard::TEvProposeTransactionResult::TPtr& ev, const TActorContext& ctx);
-    void Handle(NBackgroundTasks::TEvAddTaskResult::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvColumnShard::TEvNotifyTxCompletionResult::TPtr &ev, const TActorContext &ctx);
     void Handle(NSequenceShard::TEvSequenceShard::TEvCreateSequenceResult::TPtr &ev, const TActorContext &ctx);
     void Handle(NSequenceShard::TEvSequenceShard::TEvDropSequenceResult::TPtr &ev, const TActorContext &ctx);

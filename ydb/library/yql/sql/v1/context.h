@@ -263,6 +263,7 @@ namespace NSQLTranslationV1 {
         bool PragmaRegexUseRe2 = true;
         bool PragmaPullUpFlatMapOverJoin = true;
         bool FilterPushdownOverJoinOptionalSide = false;
+        bool RotateJoinTree = true;
         bool WarnUnnamedColumns = false;
         bool DiscoveryMode = false;
         bool EnableSystemColumns = true;
@@ -315,6 +316,8 @@ namespace NSQLTranslationV1 {
         bool BlockEngineForce = false;
         bool UnorderedResult = false;
         ui64 ParallelModeCount = 0;
+        bool CompactNamedExprs = false;
+        bool ValidateUnusedExprs = false;
     };
 
     class TColumnRefScope {

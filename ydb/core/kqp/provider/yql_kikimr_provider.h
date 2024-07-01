@@ -3,8 +3,9 @@
 #include "yql_kikimr_gateway.h"
 #include "yql_kikimr_settings.h"
 
-#include <ydb/core/kqp/common/simple/temp_tables.h>
+#include <ydb/core/base/path.h>
 #include <ydb/core/external_sources/external_source_factory.h>
+#include <ydb/core/kqp/common/simple/temp_tables.h>
 #include <ydb/core/kqp/query_data/kqp_query_data.h>
 #include <ydb/library/yql/ast/yql_gc_nodes.h>
 #include <ydb/library/yql/core/yql_type_annotation.h>
@@ -334,7 +335,7 @@ public:
             if (TempTablesState) {
                 auto tempTableInfoIt = TempTablesState->FindInfo(table, false);
                 if (tempTableInfoIt != TempTablesState->TempTables.end()) {
-                    table = tempTableInfoIt->first + TempTablesState->SessionId;
+                    table = NKikimr::NKqp::GetTempTablePath(TempTablesState->Database, TempTablesState->SessionId, tempTableInfoIt->first);
                 }
             }
 
@@ -505,12 +506,20 @@ public:
         return Database;
     }
 
+    const TString& GetSessionId() const {
+        return SessionId;
+    }
+
     void SetCluster(const TString& cluster) {
         Cluster = cluster;
     }
 
     void SetDatabase(const TString& database) {
         Database = database;
+    }
+
+    void SetSessionId(const TString& sessionId) {
+        SessionId = sessionId;
     }
 
     NKikimr::NKqp::TKqpTempTablesState::TConstPtr GetTempTablesState() const {
@@ -543,6 +552,7 @@ private:
     TString UserName;
     TString Cluster;
     TString Database;
+    TString SessionId;
     TKikimrConfiguration::TPtr Configuration;
     TIntrusivePtr<TKikimrTablesData> TablesData;
     TIntrusivePtr<TKikimrQueryContext> QueryCtx;

@@ -55,6 +55,12 @@ public:
         return it->second;
     }
 
+    TWorkerId GetWorkerId(const TActorId& id) const {
+        auto it = ActorIdToWorkerId.find(id);
+        Y_ABORT_UNLESS(it != ActorIdToWorkerId.end());
+        return it->second;
+    }
+
     TActorId RegisterWorker(IActorOps* ops, const TWorkerId& id, IActor* actor) {
         auto res = Workers.emplace(id, ops->Register(actor));
         Y_ABORT_UNLESS(res.second);
@@ -62,7 +68,7 @@ public:
         const auto actorId = res.first->second;
         ActorIdToWorkerId.emplace(actorId, id);
 
-        SendWorkerStatus(ops, id, NKikimrReplication::TEvWorkerStatus::RUNNING);
+        SendWorkerStatus(ops, id, NKikimrReplication::TEvWorkerStatus::STATUS_RUNNING);
         return actorId;
     }
 
@@ -71,25 +77,27 @@ public:
         Y_ABORT_UNLESS(it != Workers.end());
 
         ops->Send(it->second, new TEvents::TEvPoison());
-        SendWorkerStatus(ops, id, NKikimrReplication::TEvWorkerStatus::STOPPED);
+        SendWorkerStatus(ops, id, NKikimrReplication::TEvWorkerStatus::STATUS_STOPPED);
 
         ActorIdToWorkerId.erase(it->second);
         Workers.erase(it);
     }
 
-    void StopWorker(IActorOps* ops, const TActorId& id) {
+    template <typename... Args>
+    void StopWorker(IActorOps* ops, const TActorId& id, Args&&... args) {
         auto it = ActorIdToWorkerId.find(id);
         Y_ABORT_UNLESS(it != ActorIdToWorkerId.end());
 
         // actor already stopped
-        SendWorkerStatus(ops, it->second, NKikimrReplication::TEvWorkerStatus::STOPPED);
+        SendWorkerStatus(ops, it->second, NKikimrReplication::TEvWorkerStatus::STATUS_STOPPED, std::forward<Args>(args)...);
 
         Workers.erase(it->second);
         ActorIdToWorkerId.erase(it);
     }
 
-    void SendWorkerStatus(IActorOps* ops, const TWorkerId& id, NKikimrReplication::TEvWorkerStatus::EStatus status) {
-        ops->Send(ActorId, new TEvService::TEvWorkerStatus(id, status));
+    template <typename... Args>
+    void SendWorkerStatus(IActorOps* ops, const TWorkerId& id, Args&&... args) {
+        ops->Send(ActorId, new TEvService::TEvWorkerStatus(id, std::forward<Args>(args)...));
     }
 
     void SendStatus(IActorOps* ops) const {
@@ -273,7 +281,7 @@ class TReplicationService: public TActorBootstrapped<TReplicationService> {
         }
 
         if (session.HasWorker(id)) {
-            return session.SendWorkerStatus(this, id, NKikimrReplication::TEvWorkerStatus::RUNNING);
+            return session.SendWorkerStatus(this, id, NKikimrReplication::TEvWorkerStatus::STATUS_RUNNING);
         }
 
         LOG_I("Run worker"
@@ -315,7 +323,7 @@ class TReplicationService: public TActorBootstrapped<TReplicationService> {
         }
 
         if (!session.HasWorker(id)) {
-            return session.SendWorkerStatus(this, id, NKikimrReplication::TEvWorkerStatus::STOPPED);
+            return session.SendWorkerStatus(this, id, NKikimrReplication::TEvWorkerStatus::STATUS_STOPPED);
         }
 
         LOG_I("Stop worker"
@@ -327,33 +335,58 @@ class TReplicationService: public TActorBootstrapped<TReplicationService> {
     void Handle(TEvWorker::TEvGone::TPtr& ev) {
         LOG_T("Handle " << ev->Get()->ToString());
 
-        auto wit = WorkerActorIdToSession.find(ev->Sender);
-        if (wit == WorkerActorIdToSession.end()) {
-            LOG_W("Unknown worker has gone"
-                << ": worker# " << ev->Sender);
+        auto* session = SessionFromWorker(ev->Sender);
+        if (!session) {
             return;
         }
 
-        auto it = Sessions.find(wit->second);
-        if (it == Sessions.end()) {
-            LOG_E("Cannot find session"
-                << ": worker# " << ev->Sender
-                << ", session# " << wit->second);
-            return;
-        }
-
-        auto& session = it->second;
-        if (!session.HasWorker(ev->Sender)) {
+        if (!session->HasWorker(ev->Sender)) {
             LOG_E("Cannot find worker"
-                << ": worker# " << ev->Sender
-                << ", session# " << wit->second);
+                << ": worker# " << ev->Sender);
             return;
         }
 
         LOG_I("Worker has gone"
             << ": worker# " << ev->Sender);
         WorkerActorIdToSession.erase(ev->Sender);
-        session.StopWorker(this, ev->Sender);
+        session->StopWorker(this, ev->Sender, ToReason(ev->Get()->Status), ev->Get()->ErrorDescription);
+    }
+
+    void Handle(TEvWorker::TEvStatus::TPtr& ev) {
+        LOG_T("Handle " << ev->Get()->ToString());
+
+        auto* session = SessionFromWorker(ev->Sender);
+        if (session && session->HasWorker(ev->Sender)) {
+            session->SendWorkerStatus(this, session->GetWorkerId(ev->Sender), ev->Get()->Lag);
+        }
+    }
+
+    TSessionInfo* SessionFromWorker(const TActorId& id) {
+        auto wit = WorkerActorIdToSession.find(id);
+        if (wit == WorkerActorIdToSession.end()) {
+            LOG_W("Unknown worker has gone"
+                << ": worker# " << id);
+            return nullptr;
+        }
+
+        auto it = Sessions.find(wit->second);
+        if (it == Sessions.end()) {
+            LOG_E("Cannot find session"
+                << ": worker# " << id
+                << ", session# " << wit->second);
+            return nullptr;
+        }
+
+        return &it->second;
+    }
+
+    static NKikimrReplication::TEvWorkerStatus::EReason ToReason(TEvWorker::TEvGone::EStatus status) {
+        switch (status) {
+        case TEvWorker::TEvGone::SCHEME_ERROR:
+            return NKikimrReplication::TEvWorkerStatus::REASON_ERROR;
+        default:
+            return NKikimrReplication::TEvWorkerStatus::REASON_UNSPECIFIED;
+        }
     }
 
     void PassAway() override {
@@ -388,6 +421,7 @@ public:
             hFunc(TEvService::TEvRunWorker, Handle);
             hFunc(TEvService::TEvStopWorker, Handle);
             hFunc(TEvWorker::TEvGone, Handle);
+            hFunc(TEvWorker::TEvStatus, Handle);
             sFunc(TEvents::TEvPoison, PassAway);
         }
     }
