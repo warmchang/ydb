@@ -1,8 +1,10 @@
 LIBRARY()
 
 SRCS(
-    yql_yt_block_input_filter.cpp
     yql_yt_block_input.cpp
+    yql_yt_block_io_filter.cpp
+    yql_yt_block_io_utils.cpp
+    yql_yt_block_output.cpp
     yql_yt_datasink_constraints.cpp
     yql_yt_datasink_exec.cpp
     yql_yt_datasink_finalize.cpp
@@ -14,6 +16,7 @@ SRCS(
     yql_yt_datasource_type_ann.cpp
     yql_yt_datasource.cpp
     yql_yt_epoch.cpp
+    yql_yt_forwarding_gateway.cpp
     yql_yt_gateway.cpp
     yql_yt_horizontal_join.cpp
     yql_yt_helpers.cpp
@@ -44,6 +47,8 @@ SRCS(
     yql_yt_dq_optimize.cpp
     yql_yt_dq_hybrid.cpp
     yql_yt_wide_flow.cpp
+    yql_yt_ytflow_integration.cpp
+    yql_yt_ytflow_optimize.cpp
 
     phy_opt/yql_yt_phy_opt.cpp
     phy_opt/yql_yt_phy_opt_content.cpp
@@ -59,6 +64,7 @@ SRCS(
     phy_opt/yql_yt_phy_opt_field_subset.cpp
     phy_opt/yql_yt_phy_opt_helper.cpp
     phy_opt/yql_yt_phy_opt_key_range.cpp
+    phy_opt/yql_yt_phy_opt_ytql.cpp
     phy_opt/yql_yt_phy_opt_merge.cpp
     phy_opt/yql_yt_phy_opt_push.cpp
     phy_opt/yql_yt_phy_opt_write.cpp
@@ -74,6 +80,12 @@ PEERDIR(
     yql/essentials/public/udf
     yql/essentials/public/udf/tz
     yql/essentials/sql
+    yql/essentials/sql/v1
+    yql/essentials/sql/v1/lexer/antlr4
+    yql/essentials/sql/v1/lexer/antlr4_ansi
+    yql/essentials/sql/v1/proto_parser/antlr4
+    yql/essentials/sql/v1/proto_parser/antlr4_ansi
+    yql/essentials/parser/pg_wrapper/interface
     yql/essentials/utils
     yql/essentials/utils/log
     yql/essentials/core
@@ -115,6 +127,9 @@ PEERDIR(
     yt/yql/providers/yt/opt
     yt/yql/providers/yt/gateway/qplayer
     yt/yql/providers/yt/proto
+    yt/yql/providers/ytflow/expr_nodes
+    yt/yql/providers/ytflow/integration/interface
+    yt/yql/providers/ytflow/integration/proto
 )
 
 YQL_LAST_ABI_VERSION()

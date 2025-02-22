@@ -21,7 +21,7 @@ Y_UNIT_TEST_SUITE(AssignTxId) {
         int i = 0;
         for (const auto& [version, txId] : expected) {
             const auto& actual = result.GetVersionTxIds(i++);
-            UNIT_ASSERT_VALUES_EQUAL(TRowVersion::Parse(actual.GetVersion()), version);
+            UNIT_ASSERT_VALUES_EQUAL(TRowVersion::FromProto(actual.GetVersion()), version);
             if (txId) {
                 UNIT_ASSERT_VALUES_EQUAL(actual.GetTxId(), txId);
             }
@@ -49,7 +49,7 @@ Y_UNIT_TEST_SUITE(AssignTxId) {
                     `/Root/table` AS `/Root/replica`
                 WITH (
                     CONNECTION_STRING = "grpc://%s/?database=/Root",
-                    CONSISTENCY_MODE = "GLOBAL",
+                    CONSISTENCY_LEVEL = "GLOBAL",
                     COMMIT_INTERVAL = Interval("PT10S")
                 );
             )", env.GetEndpoint().c_str()))

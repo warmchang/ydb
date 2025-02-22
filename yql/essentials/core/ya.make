@@ -69,12 +69,13 @@ PEERDIR(
     yql/essentials/core/url_lister/interface
     yql/essentials/core/url_preprocessing/interface
     yql/essentials/minikql
-    yql/essentials/minikql/jsonpath
+    yql/essentials/minikql/jsonpath/parser
     yql/essentials/core/minsketch
     yql/essentials/protos
     yql/essentials/public/udf
     yql/essentials/public/udf/tz
     yql/essentials/sql/settings
+    yql/essentials/sql
     yql/essentials/utils
     yql/essentials/utils/log
     yql/essentials/core/expr_nodes

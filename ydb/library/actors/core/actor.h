@@ -11,12 +11,14 @@
 #include <util/system/tls.h>
 #include <util/generic/noncopyable.h>
 
+#include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
+
 namespace NActors {
     class TActorSystem;
     class TMailboxTable;
     class TMailbox;
 
-    class TGenericExecutorThread;
+    class TExecutorThread;
     class IActor;
     class ISchedulerCookie;
     class IExecutorPool;
@@ -44,11 +46,11 @@ namespace NActors {
     struct TActivationContext {
     public:
         TMailbox& Mailbox;
-        TGenericExecutorThread& ExecutorThread;
+        TExecutorThread& ExecutorThread;
         const NHPTimer::STime EventStart;
 
     protected:
-        explicit TActivationContext(TMailbox& mailbox, TGenericExecutorThread& executorThread, NHPTimer::STime eventStart)
+        explicit TActivationContext(TMailbox& mailbox, TExecutorThread& executorThread, NHPTimer::STime eventStart)
             : Mailbox(mailbox)
             , ExecutorThread(executorThread)
             , EventStart(eventStart)
@@ -131,12 +133,17 @@ namespace NActors {
         static double GetCurrentEventTicksAsSeconds();
 
         static void EnableMailboxStats();
+
+        static ui32 GetOverwrittenEventsPerMailbox();
+        static void SetOverwrittenEventsPerMailbox(ui32 value);
+        static ui64 GetOverwrittenTimePerMailboxTs();
+        static void SetOverwrittenTimePerMailboxTs(ui64 value);
     };
 
     struct TActorContext: public TActivationContext {
         const TActorId SelfID;
         using TEventFlags = IEventHandle::TEventFlags;
-        explicit TActorContext(TMailbox& mailbox, TGenericExecutorThread& executorThread, NHPTimer::STime eventStart, const TActorId& selfID)
+        explicit TActorContext(TMailbox& mailbox, TExecutorThread& executorThread, NHPTimer::STime eventStart, const TActorId& selfID)
             : TActivationContext(mailbox, executorThread, eventStart)
             , SelfID(selfID)
         {
@@ -270,6 +277,9 @@ namespace NActors {
 
         virtual TActorId Register(IActor*, TMailboxType::EType mailboxType = TMailboxType::HTSwap, ui32 poolId = Max<ui32>()) const noexcept = 0;
         virtual TActorId RegisterWithSameMailbox(IActor*) const noexcept = 0;
+
+        virtual TActorId RegisterAlias() noexcept = 0;
+        virtual void UnregisterAlias(const TActorId& actorId) noexcept = 0;
     };
 
     class TDecorator;
@@ -353,11 +363,16 @@ namespace NActors {
         friend void DoActorInit(TActorSystem*, IActor*, const TActorId&, const TActorId&);
         friend class TDecorator;
 
+    private:
+        // actor aliases
+        absl::flat_hash_set<ui64> Aliases;
+        friend class TMailbox;
+
     private: // stuck actor monitoring
         TMonotonic LastReceiveTimestamp;
         size_t StuckIndex = Max<size_t>();
         friend class TExecutorPoolBaseMailboxed;
-        friend class TGenericExecutorThread;
+        friend class TExecutorThread;
 
         IActor(const ui32 activityType)
             : SelfActorId(TActorId())
@@ -527,6 +542,11 @@ namespace NActors {
         }
 
         void Receive(TAutoPtr<IEventHandle>& ev) {
+#ifndef NDEBUG
+            if (ev->Flags & IEventHandle::FlagDebugTrackReceive) {
+                YaDebugBreak();
+            }
+#endif
             ++HandledEvents;
             LastReceiveTimestamp = TActivationContext::Monotonic();
             if (CImpl.Initialized()) {
@@ -599,6 +619,9 @@ namespace NActors {
         // This method of registration can be useful if multiple actors share
         // some memory.
         TActorId RegisterWithSameMailbox(IActor* actor) const noexcept final;
+
+        TActorId RegisterAlias() noexcept final;
+        void UnregisterAlias(const TActorId& actorId) noexcept final;
 
         std::pair<ui32, ui32> CountMailboxEvents(ui32 maxTraverse = Max<ui32>()) const;
 

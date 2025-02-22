@@ -550,15 +550,16 @@
             "params": {
                 "c_compiler": "$(CLANG)/bin/clang",
                 "cxx_compiler": "$(CLANG)/bin/clang++",
-                "gcc_version": "16",
                 "llvm-symbolizer": "$(CLANG)/bin/llvm-symbolizer",
                 "match_root": "CLANG",
+                "nm": "$(CLANG)/bin/llvm-nm",
                 "objcopy": "$(CLANG)/bin/llvm-objcopy",
                 "profiles": "$(XCODE_TOOLS_ROOT-sbr:799017771)/Xcode/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles",
                 "simctl": "$(XCODE_TOOLS_ROOT-sbr:799017771)/Xcode/SystemRoot/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simctl",
                 "strip": "$(CLANG)/bin/llvm-strip",
                 "type": "clang",
-                "use_bundle": true
+                "use_bundle": true,
+                "version": "16"
             },
             "platforms": [
                 {
@@ -1125,7 +1126,7 @@
                 "type": "msvc",
                 "use_bundle": true,
                 "use_clang": true,
-                "version": "2019"
+                "version": "16"
             },
             "platforms": [
                 {
@@ -1227,15 +1228,16 @@
             "params": {
                 "c_compiler": "$(CLANG)/bin/clang",
                 "cxx_compiler": "$(CLANG)/bin/clang++",
-                "gcc_version": "18",
                 "llvm-symbolizer": "$(CLANG)/bin/llvm-symbolizer",
                 "match_root": "CLANG",
+                "nm": "$(CLANG)/bin/llvm-nm",
                 "objcopy": "$(CLANG)/bin/llvm-objcopy",
                 "profiles": "$(XCODE_TOOLS_ROOT-sbr:799017771)/Xcode/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles",
                 "simctl": "$(XCODE_TOOLS_ROOT-sbr:799017771)/Xcode/SystemRoot/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simctl",
                 "strip": "$(CLANG)/bin/llvm-strip",
                 "type": "clang",
-                "use_bundle": true
+                "use_bundle": true,
+                "version": "18"
             },
             "platforms": [
                 {
@@ -1802,7 +1804,7 @@
                 "type": "msvc",
                 "use_bundle": true,
                 "use_clang": true,
-                "version": "2019"
+                "version": "18"
             },
             "platforms": [
                 {

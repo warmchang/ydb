@@ -179,9 +179,13 @@ void CommonInitialize(TGuard<TMutex>& g)
 
     auto logPath = TConfig::Get()->LogPath;
     if (logPath.empty()) {
+        auto coreLoggingConfig = NLogging::TLogManagerConfig::CreateStderrLogger(ToCoreLogLevel(logLevel));
+        for (const auto& rule : coreLoggingConfig->Rules) {
+            rule->ExcludeCategories = TConfig::Get()->LogExcludeCategories;
+        }
+        NLogging::TLogManager::Get()->Configure(coreLoggingConfig);
+
         if (TConfig::Get()->LogUseCore) {
-            auto coreLoggingConfig = NLogging::TLogManagerConfig::CreateStderrLogger(ToCoreLogLevel(logLevel));
-            NLogging::TLogManager::Get()->Configure(coreLoggingConfig);
             SetUseCoreLog();
         } else {
             auto logger = CreateStdErrLogger(logLevel);
@@ -189,6 +193,9 @@ void CommonInitialize(TGuard<TMutex>& g)
         }
     } else {
         auto coreLoggingConfig = NLogging::TLogManagerConfig::CreateLogFile(logPath, ToCoreLogLevel(logLevel));
+        for (const auto& rule : coreLoggingConfig->Rules) {
+            rule->ExcludeCategories = TConfig::Get()->LogExcludeCategories;
+        }
         NLogging::TLogManager::Get()->Configure(coreLoggingConfig);
         SetUseCoreLog();
     }
@@ -219,11 +226,11 @@ void ExecJob(int argc, const char** argv, const TInitializeOptions& options)
 
         NDetail::OutputTableCount = static_cast<i64>(outputTableCount);
 
-        THolder<IInputStream> jobStateStream;
+        std::unique_ptr<IInputStream> jobStateStream;
         if (hasState) {
-            jobStateStream = MakeHolder<TIFStream>("jobstate");
+            jobStateStream = std::make_unique<TIFStream>("jobstate");
         } else {
-            jobStateStream = MakeHolder<TBufferStream>(0);
+            jobStateStream = std::make_unique<TBufferStream>(0);
         }
 
         int ret = 1;

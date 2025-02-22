@@ -73,7 +73,7 @@ TMaybeNode<TYtSection> MaterializeSectionIfRequired(TExprBase world, TYtSection 
                 .Paths()
                     .Add(path)
                 .Build()
-                .Settings(NYql::RemoveSetting(section.Settings().Ref(), EYtSettingType::Sample, ctx))
+                .Settings(NYql::RemoveSettings(section.Settings().Ref(), EYtSettingType::Sample | EYtSettingType::SysColumns, ctx))
                 .Done();
     }
 
@@ -89,7 +89,7 @@ TMaybeNode<TYtSection> UpdateSectionWithRange(TExprBase world, TYtSection sectio
     TVector<TYtPath> skippedPaths;
     if (auto limiter = TTableLimiter(range)) {
         if (auto materialized = MaterializeSectionIfRequired(world, section, dataSink, outRowSpec, keepSortness,
-            {NYql::KeepOnlySettings(section.Settings().Ref(), EYtSettingType::Take | EYtSettingType::Skip | EYtSettingType::SysColumns, ctx)}, state, ctx))
+            {NYql::KeepOnlySettings(section.Settings().Ref(), EYtSettingType::Take | EYtSettingType::Skip, ctx)}, state, ctx))
         {
             if (!allowMaterialize || state->Types->EvaluationInProgress) {
                 // Keep section as is
@@ -657,6 +657,22 @@ private:
     const TYtState::TPtr State_;
 };
 
+struct TPeepholeFinalPipelineConfigurator : public IPipelineConfigurator {
+    TPeepholeFinalPipelineConfigurator(TYtState::TPtr state)
+        : State_(std::move(state))
+        {}
+private:
+    void AfterCreate(TTransformationPipeline*) const final {}
+
+    void AfterTypeAnnotation(TTransformationPipeline*) const final {}
+
+    void AfterOptimize(TTransformationPipeline* pipeline) const final {
+        pipeline->Add(CreateYtBlockOutputTransformer(State_), "BlockOutput");
+    }
+
+    const TYtState::TPtr State_;
+};
+
 IGraphTransformer::TStatus PeepHoleOptimizeBeforeExec(TExprNode::TPtr input, TExprNode::TPtr& output,
     const TYtState::TPtr& state, bool& hasNonDeterministicFunctions, TExprContext& ctx, bool estimateTableContentWeight)
 {
@@ -666,8 +682,10 @@ IGraphTransformer::TStatus PeepHoleOptimizeBeforeExec(TExprNode::TPtr input, TEx
     }
 
     const TPeepholePipelineConfigurator wideFlowTransformers(state);
+    const TPeepholeFinalPipelineConfigurator wideFlowFinalTransformers(state);
     TPeepholeSettings peepholeSettings;
     peepholeSettings.CommonConfig = &wideFlowTransformers;
+    peepholeSettings.FinalConfig = &wideFlowFinalTransformers;
     return PeepHoleOptimizeNode(output, output, ctx, *state->Types, nullptr, hasNonDeterministicFunctions, peepholeSettings);
 }
 

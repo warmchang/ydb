@@ -4,6 +4,7 @@
 #include "kikimr_services_initializers.h"
 
 #include <ydb/core/memory_controller/memory_controller.h>
+#include <ydb/library/actors/core/callstack.h>
 #include <ydb/library/actors/core/events.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/core/event_local.h>
@@ -35,8 +36,7 @@
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
 #include <ydb/core/grpc_services/grpc_mon.h>
 #include <ydb/core/log_backend/log_backend.h>
-#include <ydb/core/mon/sync_http_mon.h>
-#include <ydb/core/mon/async_http_mon.h>
+#include <ydb/core/mon/mon.h>
 #include <ydb/core/mon/crossref.h>
 #include <ydb/core/mon_alloc/profiler.h>
 
@@ -99,7 +99,7 @@
 
 #include <ydb/services/auth/grpc_service.h>
 #include <ydb/services/cms/grpc_service.h>
-#include <ydb/services/bsconfig/grpc_service.h>
+#include <ydb/services/config/grpc_service.h>
 #include <ydb/services/dynamic_config/grpc_service.h>
 #include <ydb/services/datastreams/grpc_service.h>
 #include <ydb/services/discovery/grpc_service.h>
@@ -250,6 +250,7 @@ public:
 
         appData->CompactionConfig = Config.GetCompactionConfig();
         appData->BackgroundCleaningConfig = Config.GetBackgroundCleaningConfig();
+        appData->DataErasureConfig = Config.GetDataErasureConfig();
     }
 };
 
@@ -473,11 +474,7 @@ void TKikimrRunner::InitializeMonitoring(const TKikimrRunConfig& runConfig, bool
         if (ModuleFactories && ModuleFactories->MonitoringFactory) {
             Monitoring = ModuleFactories->MonitoringFactory(std::move(monConfig), appConfig);
         } else {
-            if (appConfig.GetFeatureFlags().GetEnableAsyncHttpMon()) {
-                Monitoring = new NActors::TAsyncHttpMon(std::move(monConfig));
-            } else {
-                Monitoring = new NActors::TSyncHttpMon(std::move(monConfig));
-            }
+            Monitoring = new NActors::TMon(std::move(monConfig));
         }
         if (Monitoring) {
             Monitoring->RegisterCountersPage("counters", "Counters", Counters);
@@ -490,8 +487,15 @@ void TKikimrRunner::InitializeMonitoring(const TKikimrRunConfig& runConfig, bool
 void TKikimrRunner::InitializeMonitoringLogin(const TKikimrRunConfig&)
 {
     if (Monitoring) {
-        Monitoring->RegisterHandler("/login", MakeWebLoginServiceId());
-        Monitoring->RegisterHandler("/logout", MakeWebLoginServiceId());
+        Monitoring->RegisterActorHandler({
+            .Path = "/login",
+            .Handler = MakeWebLoginServiceId(),
+            .UseAuth = false, // we don't require token for the login page - it's the page to get the token
+        });
+        Monitoring->RegisterActorHandler({
+            .Path = "/logout",
+            .Handler = MakeWebLoginServiceId(),
+        });
     }
 }
 
@@ -617,8 +621,8 @@ void TKikimrRunner::InitializeGRpc(const TKikimrRunConfig& runConfig) {
         names["tablet_service"] = &hasTabletService;
         TServiceCfg hasView = services.empty();
         names["view"] = &hasView;
-        TServiceCfg hasBSConfig = services.empty();
-        names["bsconfig"] = &hasBSConfig;
+        TServiceCfg hasConfig = services.empty();
+        names["config"] = &hasConfig;
 
         std::unordered_set<TString> enabled;
         for (const auto& name : services) {
@@ -912,8 +916,8 @@ void TKikimrRunner::InitializeGRpc(const TKikimrRunConfig& runConfig) {
                 grpcRequestProxies[0], hasView.IsRlAllowed()));
         }
 
-        if (hasBSConfig) {
-            server.AddService(new NGRpcService::TBSConfigGRpcService(ActorSystem.Get(), Counters, grpcRequestProxies[0]));
+        if (hasConfig) {
+            server.AddService(new NGRpcService::TConfigGRpcService(ActorSystem.Get(), Counters, grpcRequestProxies[0]));
         }
 
         if (ModuleFactories) {
@@ -1054,6 +1058,11 @@ void TKikimrRunner::InitializeAllocator(const TKikimrRunConfig& runConfig) {
     for (const auto& a : allocConfig.GetParam()) {
         NMalloc::MallocInfo().SetParam(a.first.c_str(), a.second.c_str());
     }
+#if defined(ALLOW_DEFAULT_ALLOCATOR)
+    if (allocConfig.GetEnableDefaultAllocator()) {
+        NKikimr::UseDefaultAllocator();
+    }
+#endif
 }
 
 void TKikimrRunner::InitializeAppData(const TKikimrRunConfig& runConfig)
@@ -1076,6 +1085,7 @@ void TKikimrRunner::InitializeAppData(const TKikimrRunConfig& runConfig)
     AppData->PersQueueMirrorReaderFactory = ModuleFactories ? ModuleFactories->PersQueueMirrorReaderFactory.get() : nullptr;
     AppData->PersQueueGetReadSessionsInfoWorkerFactory = ModuleFactories ? ModuleFactories->PQReadSessionsInfoWorkerFactory.get() : nullptr;
     AppData->IoContextFactory = ModuleFactories ? ModuleFactories->IoContextFactory.get() : nullptr;
+    AppData->SchemeOperationFactory = ModuleFactories ? ModuleFactories->SchemeOperationFactory.get() : nullptr;
 
     AppData->SqsAuthFactory = ModuleFactories
         ? ModuleFactories->SqsAuthFactory.get()
@@ -1783,10 +1793,10 @@ void TKikimrRunner::KikimrStop(bool graceful) {
     if (enableReleaseNodeNameOnGracefulShutdown) {
         using namespace NKikimr::NNodeBroker;
         using TEvent = TEvNodeBroker::TEvGracefulShutdownRequest;
-        
+
         const ui32 nodeId = ActorSystem->NodeId;
         bool isDynamicNode = AppData->DynamicNameserviceConfig->MinDynamicNodeId <= nodeId;
-        
+
         if (isDynamicNode) {
             NTabletPipe::TClientConfig pipeConfig;
             pipeConfig.RetryPolicy = {.RetryLimitCount = 10};

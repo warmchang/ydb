@@ -80,6 +80,16 @@ const TSet<NUdf::EDataSlot> DEFAULT_BLOCK_INPUT_SUPPORTED_DATA_TYPES =
         NUdf::EDataSlot::String, NUdf::EDataSlot::Utf8,
         NUdf::EDataSlot::Yson
     };
+const TSet<TString> DEFAULT_BLOCK_OUTPUT_SUPPORTED_TYPES = {};
+const TSet<NUdf::EDataSlot> DEFAULT_BLOCK_OUTPUT_SUPPORTED_DATA_TYPES =
+    {
+        NUdf::EDataSlot::Int8, NUdf::EDataSlot::Uint8,
+        NUdf::EDataSlot::Int16, NUdf::EDataSlot::Uint16,
+        NUdf::EDataSlot::Int32, NUdf::EDataSlot::Uint32,
+        NUdf::EDataSlot::Int64, NUdf::EDataSlot::Uint64,
+        NUdf::EDataSlot::Bool, NUdf::EDataSlot::Double,
+        NUdf::EDataSlot::String, NUdf::EDataSlot::Utf8
+    };
 
 constexpr auto DEFAULT_SWITCH_MEMORY_LIMIT = 128_MB;
 
@@ -91,7 +101,7 @@ constexpr ui64 DEFAULT_TABLE_CONTENT_LOCAL_EXEC = 0;
 
 constexpr ui32 DEFAULT_BATCH_LIST_FOLDER_CONCURRENCY = 5;
 
-constexpr bool DEFAULT_PARTITION_BY_CONSTANT_KEYS_VIA_MAP = false;
+constexpr bool DEFAULT_PARTITION_BY_CONSTANT_KEYS_VIA_MAP = true;
 
 constexpr ui64 DEFAULT_LLVM_NODE_COUNT_LIMIT = 200000;
 
@@ -99,7 +109,13 @@ constexpr ui16 DEFAULT_MIN_COLUMN_GROUP_SIZE = 2;
 constexpr ui16 DEFAULT_MAX_COLUMN_GROUPS = 64;
 
 constexpr bool DEFAULT_DISABLE_FUSE_OPERATIONS = false;
+constexpr bool DEFAULT_ENABLE_FUSE_MAP_TO_MAPREDUCE = false;
 
 constexpr bool DEFAULT_ENABLE_DQ_WRITE_CONSTRAINTS = false;
+
+constexpr bool DEFAULT_USE_QL_FILTER = false;
+constexpr bool DEFAULT_PRUNE_QL_FILTER_LAMBDA = true;
+
+constexpr bool DEFAULT_DROP_UNUSED_KEYS_FROM_KEY_FILTER = false;
 
 } // NYql

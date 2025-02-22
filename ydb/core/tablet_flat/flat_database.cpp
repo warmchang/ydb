@@ -518,6 +518,11 @@ const TDbStats& TDatabase::Counters() const noexcept
     return DatabaseImpl->Stats;
 }
 
+TDbRuntimeStats TDatabase::RuntimeCounters() const noexcept
+{
+    return DatabaseImpl->GetRuntimeStats();
+}
+
 void TDatabase::UpdateApproximateFreeSharesByChannel(const THashMap<ui32, float>& approximateFreeSpaceShareByChannel)
 {
     for (auto& [channel, value] : approximateFreeSpaceShareByChannel) {
@@ -567,9 +572,14 @@ TEpoch TDatabase::TxSnapTable(ui32 table)
     return DatabaseImpl->FlushTable(table);
 }
 
-TAutoPtr<TSubset> TDatabase::Subset(ui32 table, TArrayRef<const TLogoBlobID> bundle, TEpoch before) const
+TAutoPtr<TSubset> TDatabase::CompactionSubset(ui32 table, TEpoch before, TArrayRef<const TLogoBlobID> bundle) const
 {
-    return Require(table)->Subset(bundle, before);
+    return Require(table)->CompactionSubset(before, bundle);
+}
+
+TAutoPtr<TSubset> TDatabase::PartSwitchSubset(ui32 table, TEpoch before, TArrayRef<const TLogoBlobID> bundle, TArrayRef<const TLogoBlobID> txStatus) const
+{
+    return Require(table)->PartSwitchSubset(before, bundle, txStatus);
 }
 
 TAutoPtr<TSubset> TDatabase::Subset(ui32 table, TEpoch before, TRawVals from, TRawVals to) const
@@ -612,14 +622,13 @@ void TDatabase::ReplaceSlices(ui32 table, TBundleSlicesMap slices)
     return DatabaseImpl->ReplaceSlices(table, std::move(slices));
 }
 
-void TDatabase::Replace(ui32 table, TArrayRef<const TPartView> partViews, const TSubset &subset)
+void TDatabase::Replace(
+    ui32 table,
+    const TSubset& subset,
+    TArrayRef<const TPartView> newParts,
+    TArrayRef<const TIntrusiveConstPtr<TTxStatusPart>> newTxStatus)
 {
-    return DatabaseImpl->Replace(table, partViews, subset);
-}
-
-void TDatabase::ReplaceTxStatus(ui32 table, TArrayRef<const TIntrusiveConstPtr<TTxStatusPart>> txStatus, const TSubset &subset)
-{
-    return DatabaseImpl->ReplaceTxStatus(table, txStatus, subset);
+    return DatabaseImpl->Replace(table, subset, newParts, newTxStatus);
 }
 
 void TDatabase::Merge(ui32 table, TPartView partView)
@@ -635,6 +644,11 @@ void TDatabase::Merge(ui32 table, TIntrusiveConstPtr<TColdPart> part)
 void TDatabase::Merge(ui32 table, TIntrusiveConstPtr<TTxStatusPart> txStatus)
 {
     return DatabaseImpl->Merge(table, std::move(txStatus));
+}
+
+void TDatabase::MergeDone(ui32 table)
+{
+    return DatabaseImpl->MergeDone(table);
 }
 
 TAlter& TDatabase::Alter()

@@ -43,8 +43,9 @@ class TDstAlterer: public TActorBootstrapped<TDstAlterer> {
         switch (Kind) {
         case TReplication::ETargetKind::Table:
         case TReplication::ETargetKind::IndexTable:
+        case TReplication::ETargetKind::Transfer:
             tx.SetOperationType(NKikimrSchemeOp::ESchemeOpAlterTable);
-            PathIdFromPathId(DstPathId, tx.MutableAlterTable()->MutablePathId());
+            DstPathId.ToProto(tx.MutableAlterTable()->MutablePathId());
             tx.MutableAlterTable()->MutableReplicationConfig()->SetMode(
                 NKikimrSchemeOp::TTableReplicationConfig::REPLICATION_MODE_NONE);
             break;

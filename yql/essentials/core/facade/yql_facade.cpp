@@ -10,6 +10,19 @@
 #include <yql/essentials/core/type_ann/type_ann_expr.h>
 #include <yql/essentials/core/services/yql_plan.h>
 #include <yql/essentials/core/services/yql_eval_params.h>
+#include <yql/essentials/sql/sql.h>
+#include <yql/essentials/sql/v1/sql.h>
+//FIXME {
+#include <yql/essentials/sql/v1/lexer/antlr3/lexer.h>
+#include <yql/essentials/sql/v1/lexer/antlr3_ansi/lexer.h>
+#include <yql/essentials/sql/v1/proto_parser/antlr3/proto_parser.h>
+#include <yql/essentials/sql/v1/proto_parser/antlr3_ansi/proto_parser.h>
+//}
+#include <yql/essentials/sql/v1/lexer/antlr4/lexer.h>
+#include <yql/essentials/sql/v1/lexer/antlr4_ansi/lexer.h>
+#include <yql/essentials/sql/v1/proto_parser/antlr4/proto_parser.h>
+#include <yql/essentials/sql/v1/proto_parser/antlr4_ansi/proto_parser.h>
+#include <yql/essentials/parser/pg_wrapper/interface/parser.h>
 #include <yql/essentials/utils/log/context.h>
 #include <yql/essentials/utils/log/profile.h>
 #include <yql/essentials/utils/limiting_allocator.h>
@@ -206,10 +219,11 @@ void TProgramFactory::SetUrlListerManager(IUrlListerManagerPtr urlListerManager)
 TProgramPtr TProgramFactory::Create(
         const TFile& file,
         const TString& sessionId,
-        const TQContext& qContext)
+        const TQContext& qContext,
+        TMaybe<TString> gatewaysForMerge)
 {
     TString sourceCode = TFileInput(file).ReadAll();
-    return Create(file.GetName(), sourceCode, sessionId, EHiddenMode::Disable, qContext);
+    return Create(file.GetName(), sourceCode, sessionId, EHiddenMode::Disable, qContext, gatewaysForMerge);
 }
 
 TProgramPtr TProgramFactory::Create(
@@ -217,7 +231,8 @@ TProgramPtr TProgramFactory::Create(
         const TString& sourceCode,
         const TString& sessionId,
         EHiddenMode hiddenMode,
-        const TQContext& qContext)
+        const TQContext& qContext,
+        TMaybe<TString> gatewaysForMerge)
 {
     auto randomProvider = UseRepeatableRandomAndTimeProviders_ && !UseUnrepeatableRandom && hiddenMode == EHiddenMode::Disable ?
         CreateDeterministicRandomProvider(1) : CreateDefaultRandomProvider();
@@ -235,7 +250,7 @@ TProgramPtr TProgramFactory::Create(
         UserDataTable_, Credentials_, moduleResolver, urlListerManager,
         udfResolver, udfIndex, udfIndexPackageSet, FileStorage_, UrlPreprocessing_,
         GatewaysConfig_, filename, sourceCode, sessionId, Runner_, EnableRangeComputeFor_, ArrowResolver_, hiddenMode,
-        qContext);
+        qContext, gatewaysForMerge);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -264,7 +279,8 @@ TProgram::TProgram(
         bool enableRangeComputeFor,
         const IArrowResolver::TPtr& arrowResolver,
         EHiddenMode hiddenMode,
-        const TQContext& qContext
+        const TQContext& qContext,
+        TMaybe<TString> gatewaysForMerge
     )
     : FunctionRegistry_(functionRegistry)
     , RandomProvider_(randomProvider)
@@ -294,6 +310,7 @@ TProgram::TProgram(
     , ArrowResolver_(arrowResolver)
     , HiddenMode_(hiddenMode)
     , QContext_(qContext)
+    , GatewaysForMerge_(gatewaysForMerge)
 {
     if (SessionId_.empty()) {
         SessionId_ = CreateGuidAsString();
@@ -376,6 +393,9 @@ TProgram::TProgram(
             auto item = QContext_.GetReader()->Get({FacadeComponent, GatewaysLabel}).GetValueSync();
             if (item) {
                 YQL_ENSURE(LoadedGatewaysConfig_.ParseFromString(item->Value));
+                if (GatewaysForMerge_) {
+                    YQL_ENSURE(LoadedGatewaysConfig_.MergeFromString(*GatewaysForMerge_));
+                }
                 GatewaysConfig_ = &LoadedGatewaysConfig_;
             }
         } else if (QContext_.CanWrite() && GatewaysConfig_) {
@@ -637,7 +657,7 @@ void UpdateSqlFlagsFromQContext(const TQContext& qContext, THashSet<TString>& fl
 }
 
 void TProgram::HandleTranslationSettings(NSQLTranslation::TTranslationSettings& loadedSettings,
-    const NSQLTranslation::TTranslationSettings*& currentSettings)
+    NSQLTranslation::TTranslationSettings*& currentSettings)
 {
     if (QContext_.CanWrite()) {
         auto clusterMappingsNode = NYT::TNode::CreateMap();
@@ -712,14 +732,33 @@ bool TProgram::ParseSql(const NSQLTranslation::TTranslationSettings& settings)
     NYql::TWarningRules warningRules;
     auto sourceCode = SourceCode_;
     HandleSourceCode(sourceCode);
-    const NSQLTranslation::TTranslationSettings* currentSettings = &settings;
+    NSQLTranslation::TTranslationSettings outerSettings = settings;
+    NSQLTranslation::TTranslationSettings* currentSettings = &outerSettings;
     NSQLTranslation::TTranslationSettings loadedSettings;
     loadedSettings.PgParser = settings.PgParser;
     if (QContext_) {
         HandleTranslationSettings(loadedSettings, currentSettings);
     }
 
-    return FillParseResult(SqlToYql(sourceCode, *currentSettings, &warningRules), &warningRules);
+    currentSettings->EmitReadsForExists = true;
+    NSQLTranslationV1::TLexers lexers;
+    lexers.Antlr3 = NSQLTranslationV1::MakeAntlr3LexerFactory();
+    lexers.Antlr3Ansi = NSQLTranslationV1::MakeAntlr3AnsiLexerFactory();
+    lexers.Antlr4 = NSQLTranslationV1::MakeAntlr4LexerFactory();
+    lexers.Antlr4Ansi = NSQLTranslationV1::MakeAntlr4AnsiLexerFactory();
+    NSQLTranslationV1::TParsers parsers;
+    parsers.Antlr3 = NSQLTranslationV1::MakeAntlr3ParserFactory();
+    parsers.Antlr3Ansi = NSQLTranslationV1::MakeAntlr3AnsiParserFactory();
+    parsers.Antlr4 = NSQLTranslationV1::MakeAntlr4ParserFactory();
+    parsers.Antlr4Ansi = NSQLTranslationV1::MakeAntlr4AnsiParserFactory();
+
+    NSQLTranslation::TTranslators translators(
+        nullptr,
+        NSQLTranslationV1::MakeTranslator(lexers, parsers),
+        NSQLTranslationPG::MakeTranslator()
+    );
+
+    return FillParseResult(SqlToYql(translators, sourceCode, *currentSettings, &warningRules), &warningRules);
 }
 
 bool TProgram::Compile(const TString& username, bool skipLibraries) {
@@ -877,7 +916,6 @@ TProgram::TFutureStatus TProgram::LineageAsync(const TString& username, IOutputS
         .AddTypeAnnotation(TIssuesIds::CORE_TYPE_ANN, true)
         .AddPostTypeAnnotation()
         .Add(TExprOutputTransformer::Sync(ExprRoot_, traceOut), "ExprOutput")
-        .AddCheckExecution(false)
         .AddLineageOptimization(LineageStr_)
         .Add(TExprOutputTransformer::Sync(ExprRoot_, exprOut, withTypes), "AstOutput")
         .Build();
@@ -1143,7 +1181,6 @@ TProgram::TFutureStatus TProgram::LineageAsyncWithConfig(
     pipeline.AddPostTypeAnnotation();
     pipelineConf.AfterTypeAnnotation(&pipeline);
 
-    pipeline.AddCheckExecution(false);
     pipeline.AddLineageOptimization(LineageStr_);
 
     Transformer_ = pipeline.Build();
@@ -1598,14 +1635,13 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
     }
 
     TStringStream out;
-    NYson::TYsonWriter writer(&out);
+    NYson::TYsonWriter writer(&out, OutputFormat_);
     // Header
     writer.OnBeginMap();
     writer.OnKeyedItem("ExecutionStatistics");
     writer.OnBeginMap();
 
     // Providers
-    bool hasStatistics = false;
     THashSet<TStringBuf> processed;
     for (auto& datasink : TypeCtx_->DataSinks) {
         TStringStream providerOut;
@@ -1613,7 +1649,6 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
         if (datasink->CollectStatistics(providerWriter, totalOnly)) {
             writer.OnKeyedItem(datasink->GetName());
             writer.OnRaw(providerOut.Str());
-            hasStatistics = true;
             processed.insert(datasink->GetName());
         }
     }
@@ -1624,7 +1659,6 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
             if (datasource->CollectStatistics(providerWriter, totalOnly)) {
                 writer.OnKeyedItem(datasource->GetName());
                 writer.OnRaw(providerOut.Str());
-                hasStatistics = true;
             }
         }
     }
@@ -1655,20 +1689,23 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
 
     writer.OnEndMap(); // system
 
+    if (TypeCtx_->Modules) {
+        writer.OnKeyedItem("moduleResolver");
+        writer.OnBeginMap();
+        TypeCtx_->Modules->WriteStatistics(writer);
+        writer.OnEndMap();
+    }
+
     // extra
     for (const auto &[k, extraYson] : extraYsons) {
         writer.OnKeyedItem(k);
         writer.OnRaw(extraYson);
-        hasStatistics = true;
     }
 
     // Footer
     writer.OnEndMap();
     writer.OnEndMap();
-    if (hasStatistics) {
-        return out.Str();
-    }
-    return Nothing();
+    return out.Str();
 }
 
 TMaybe<TString> TProgram::GetDiscoveredData() {
@@ -1677,7 +1714,7 @@ TMaybe<TString> TProgram::GetDiscoveredData() {
     }
 
     TStringStream out;
-    NYson::TYsonWriter writer(&out);
+    NYson::TYsonWriter writer(&out, OutputFormat_);
     writer.OnBeginMap();
     for (auto& datasource: TypeCtx_->DataSources) {
         TStringStream providerOut;
@@ -1916,6 +1953,10 @@ TTypeAnnotationContextPtr TProgram::BuildTypeAnnotationContext(const TString& us
 
     if (providerNames.contains(DqProviderName)) {
         resultProviderDataSources.push_back(TString(DqProviderName));
+    }
+
+    if (providerNames.contains(PureProviderName)) {
+        resultProviderDataSources.push_back(TString(PureProviderName));
     }
 
     if (!resultProviderDataSources.empty())

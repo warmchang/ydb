@@ -206,10 +206,16 @@ namespace NKikimr::NYaml {
         });
         EraseMultipleByPath(json, GROUP_PATH, ERASURE_SPECIES_FIELD);
         // for security config
-        ctx.DisableBuiltinSecurity = GetBoolByPathOrNone(json, DISABLE_BUILTIN_SECURITY_PATH).value_or(false);
+        if (!ctx.DisableBuiltinSecurity) {
+            ctx.DisableBuiltinSecurity = GetBoolByPathOrNone(json, DISABLE_BUILTIN_SECURITY_PATH).value_or(false);
+        }
         EraseByPath(json, DISABLE_BUILTIN_SECURITY_PATH);
-        ctx.ExplicitEmptyDefaultGroups = CheckExplicitEmptyArrayByPathOrNone(json, DEFAULT_GROUPS_PATH).value_or(false);
-        ctx.ExplicitEmptyDefaultAccess = CheckExplicitEmptyArrayByPathOrNone(json, DEFAULT_ACCESS_PATH).value_or(false);
+        if (!ctx.DisableBuiltinGroups) {
+            ctx.DisableBuiltinGroups = CheckExplicitEmptyArrayByPathOrNone(json, DEFAULT_GROUPS_PATH).value_or(false);
+        }
+        if (!ctx.DisableBuiltinAccess) {
+            ctx.DisableBuiltinAccess = CheckExplicitEmptyArrayByPathOrNone(json, DEFAULT_ACCESS_PATH).value_or(false);
+        }
     }
 
     ui32 GetDefaultTabletCount(TString& type) {
@@ -424,7 +430,9 @@ namespace NKikimr::NYaml {
 
         auto* domainsConfig = config.MutableDomainsConfig();
 
-        bool disabledDefaultSecurity = ctx.DisableBuiltinSecurity;
+        bool disabledDefaultSecurity = ctx.DisableBuiltinSecurity ? *ctx.DisableBuiltinSecurity : false;
+        bool disableBuiltinGroups = ctx.DisableBuiltinGroups ? *ctx.DisableBuiltinGroups : false;
+        bool disableBuiltinAccess = ctx.DisableBuiltinAccess ? *ctx.DisableBuiltinAccess : false;
 
         NKikimrConfig::TDomainsConfig::TSecurityConfig* securityConfig = nullptr;
         if (domainsConfig->HasSecurityConfig()) {
@@ -443,7 +451,7 @@ namespace NKikimr::NYaml {
             user->SetPassword("");
         }
 
-        if (!ctx.ExplicitEmptyDefaultGroups && !(securityConfig && securityConfig->DefaultGroupsSize()) && !disabledDefaultSecurity) {
+        if (!disableBuiltinGroups && !(securityConfig && securityConfig->DefaultGroupsSize()) && !disabledDefaultSecurity) {
             securityConfig = domainsConfig->MutableSecurityConfig();
             {
                 auto* defaultGroupAdmins = securityConfig->AddDefaultGroups();
@@ -507,13 +515,13 @@ namespace NKikimr::NYaml {
             securityConfig->SetAllUsersGroup("USERS");
         }
 
-        if (!ctx.ExplicitEmptyDefaultAccess && !(securityConfig && securityConfig->DefaultAccessSize()) && !disabledDefaultSecurity) {
+        if (!disableBuiltinAccess && !(securityConfig && securityConfig->DefaultAccessSize()) && !disabledDefaultSecurity) {
             securityConfig = domainsConfig->MutableSecurityConfig();
             securityConfig->AddDefaultAccess("+(ConnDB):USERS"); // ConnectDatabase
             securityConfig->AddDefaultAccess("+(DS|RA):METADATA-READERS"); // DescribeSchema | ReadAttributes
             securityConfig->AddDefaultAccess("+(SR):DATA-READERS"); // SelectRow
             securityConfig->AddDefaultAccess("+(UR|ER):DATA-WRITERS"); // UpdateRow | EraseRow
-            securityConfig->AddDefaultAccess("+(CD|CT|WA|AS|RS):DDL-ADMINS"); // CreateDirectory | CreateTable | WriteAttributes | AlterSchema | RemoveSchema
+            securityConfig->AddDefaultAccess("+(CD|CT|CQ|WA|AS|RS):DDL-ADMINS"); // CreateDirectory | CreateTable | CreateQueue | WriteAttributes | AlterSchema | RemoveSchema
             securityConfig->AddDefaultAccess("+(GAR):ACCESS-ADMINS"); // GrantAccessRights
             securityConfig->AddDefaultAccess("+(CDB|DDB):DATABASE-ADMINS"); // CreateDatabase | DropDatabase
         }
@@ -536,6 +544,7 @@ namespace NKikimr::NYaml {
 
         ui64 nextHostConfigID = 1;
 
+        // TODO: validate all host_configs exists (or better just drop this legacy and use yaml anchors)
         // Find the next available host_config_id
         if (ephemeralConfig.HostConfigsSize()) {
             for(const auto& hostConfig : ephemeralConfig.GetHostConfigs()) {
@@ -691,8 +700,10 @@ namespace NKikimr::NYaml {
             auto& vdiskLoc = ctx.CombinedDiskInfo[TCombinedDiskInfoKey{}];
 
             vdiskLoc.SetNodeID("1");
-            vdiskLoc.SetPath(drivePath.value());
-            vdiskLoc.SetPDiskCategory(diskType.value());
+            if (drivePath && diskType) {
+                vdiskLoc.SetPath(drivePath.value());
+                vdiskLoc.SetPDiskCategory(diskType.value());
+            }
         }
 
         if (!config.HasChannelProfileConfig()) {
@@ -702,7 +713,9 @@ namespace NKikimr::NYaml {
                 auto& channel = *channelProfile.AddChannel();
                 channel.SetErasureSpecies(erasureName);
                 channel.SetPDiskCategory(1);
-                channel.SetStoragePoolKind(diskTypeLower.value());
+                if (diskTypeLower) {
+                    channel.SetStoragePoolKind(diskTypeLower.value());
+                }
             };
         }
     }
@@ -1101,37 +1114,38 @@ namespace NKikimr::NYaml {
     void PrepareBlobStorageConfig(NKikimrConfig::TAppConfig& config, NKikimrConfig::TEphemeralInputFields& ephemeralConfig) {
         auto* bsConfig = config.MutableBlobStorageConfig();
 
-        if (bsConfig && bsConfig->HasServiceSet()) {
-            if (bsConfig->GetServiceSet().GroupsSize()) {
-                return;  // no autoconfig
+        if (!bsConfig->HasServiceSet()) {
+            bsConfig->MutableServiceSet()->AddAvailabilityDomains(1);
+        }
+
+        if (config.HasSelfManagementConfig()) {
+            auto *smConfig = config.MutableSelfManagementConfig();
+            Y_ENSURE_BT(smConfig->HasEnabled(), "Enabled field is mandatory");
+            if (smConfig->GetEnabled()) {
+                if (!smConfig->HasErasureSpecies()) {
+                    smConfig->SetErasureSpecies(ephemeralConfig.GetStaticErasure());
+                }
+                if (!smConfig->PDiskFilterSize()) {
+                    const TString defaultDiskType(ephemeralConfig.GetDefaultDiskType());
+                    auto pdiskType = NKikimrConfig::TExtendedHostConfigDrive::TransformTypeToTypeForTHostConfigDrive<
+                        const TString, NKikimrBlobStorage::EPDiskType>(&defaultDiskType);
+                    smConfig->AddPDiskFilter()->AddProperty()->SetType(pdiskType);
+                }
+                if (!smConfig->HasGeometry() && ephemeralConfig.HasFailDomainType() &&
+                        ephemeralConfig.GetFailDomainType() != NKikimrConfig::TEphemeralInputFields::Rack) {
+                    auto* geometry = smConfig->MutableGeometry();
+                    const auto& range = FailDomainGeometryRanges.at(ephemeralConfig.GetFailDomainType());
+                    geometry->SetRealmLevelBegin(range.RealmLevelBegin);
+                    geometry->SetRealmLevelEnd(range.RealmLevelEnd);
+                    geometry->SetDomainLevelBegin(range.DomainLevelBegin);
+                    geometry->SetDomainLevelEnd(range.DomainLevelEnd);
+                }
             }
         }
 
-        bsConfig->MutableServiceSet()->AddAvailabilityDomains(1);
-
-        auto* autoconfigSettings = bsConfig->MutableAutoconfigSettings();
-        autoconfigSettings->ClearDefineHostConfig();
-        autoconfigSettings->ClearDefineBox();
-
-        if (!autoconfigSettings->HasErasureSpecies()) {
-            autoconfigSettings->SetErasureSpecies(ephemeralConfig.GetStaticErasure());
-        }
-        if (!autoconfigSettings->PDiskFilterSize()) {
-            const TString defaultDiskType(ephemeralConfig.GetDefaultDiskType());
-            auto pdiskType = NKikimrConfig::TExtendedHostConfigDrive::TransformTypeToTypeForTHostConfigDrive<const TString, NKikimrBlobStorage::EPDiskType>(&defaultDiskType);
-            autoconfigSettings->AddPDiskFilter()->AddProperty()->SetType(pdiskType);
-        }
-        if (!autoconfigSettings->HasGeometry()) {
-            if (ephemeralConfig.HasFailDomainType() &&
-                ephemeralConfig.GetFailDomainType() != NKikimrConfig::TEphemeralInputFields::Rack) {
-                auto* geometry = autoconfigSettings->MutableGeometry();
-                const auto& range = FailDomainGeometryRanges.at(ephemeralConfig.GetFailDomainType());
-                geometry->SetRealmLevelBegin(range.RealmLevelBegin);
-                geometry->SetRealmLevelEnd(range.RealmLevelEnd);
-                geometry->SetDomainLevelBegin(range.DomainLevelBegin);
-                geometry->SetDomainLevelEnd(range.DomainLevelEnd);
-            }
-        }
+        // these fields will be filled right now
+        bsConfig->ClearDefineHostConfig();
+        bsConfig->ClearDefineBox();
 
         bool hostConfigIdAssigned = false;
         bool hostConfigIdProvided = false;
@@ -1139,7 +1153,7 @@ namespace NKikimr::NYaml {
         THashSet<ui64> validHostConfigIds;
 
         for (const auto& hostConfig : ephemeralConfig.GetHostConfigs()) {
-            auto *hostconf = autoconfigSettings->AddDefineHostConfig();
+            auto *hostconf = bsConfig->AddDefineHostConfig();
             hostConfig.CopyToTDefineHostConfig(*hostconf);
             if (hostConfig.HasHostConfigId()) {
                 hostConfigIdProvided = true;
@@ -1174,7 +1188,7 @@ namespace NKikimr::NYaml {
             }
 
             if (!defineBox) {
-                defineBox = autoconfigSettings->MutableDefineBox();
+                defineBox = bsConfig->MutableDefineBox();
                 defineBox->SetBoxId(1);
             }
 
@@ -1388,8 +1402,25 @@ namespace NKikimr::NYaml {
         }
     }
 
+    void MoveFields(TTransformContext& ctx, NKikimrConfig::TAppConfig& config, NKikimrConfig::TEphemeralInputFields& ephemeralConfig) {
+        if (ephemeralConfig.HasSecurityConfig()) {
+            config.MutableDomainsConfig()->MutableSecurityConfig()->CopyFrom(ephemeralConfig.GetSecurityConfig());
+            auto securityConfig = ephemeralConfig.GetSecurityConfig();
+            if (securityConfig.HasDisableBuiltinSecurity()) {
+                ctx.DisableBuiltinSecurity = securityConfig.GetDisableBuiltinSecurity();
+            }
+            if (securityConfig.HasDisableBuiltinGroups()) {
+                ctx.DisableBuiltinGroups = securityConfig.GetDisableBuiltinGroups();
+            }
+            if (securityConfig.HasDisableBuiltinAccess()) {
+                ctx.DisableBuiltinAccess = securityConfig.GetDisableBuiltinAccess();
+            }
+        }
+    }
+
     void TransformProtoConfig(TTransformContext& ctx, NKikimrConfig::TAppConfig& config, NKikimrConfig::TEphemeralInputFields& ephemeralConfig, bool relaxed) {
         PrepareHosts(ephemeralConfig);
+        MoveFields(ctx, config, ephemeralConfig);
         ApplyDefaultConfigs(ctx, config, ephemeralConfig);
         PrepareNameserviceConfig(config, ephemeralConfig);
         PrepareStaticGroup(ctx, config, ephemeralConfig);
@@ -1451,9 +1482,9 @@ namespace NKikimr::NYaml {
         return result;
     }
 
-    Ydb::BSConfig::ReplaceStorageConfigRequest BuildReplaceDistributedStorageCommand(const TString& data) {
-        Ydb::BSConfig::ReplaceStorageConfigRequest replaceRequest;
-        replaceRequest.set_yaml_config(data);
+    Ydb::Config::ReplaceConfigRequest BuildReplaceDistributedStorageCommand(const TString& data) {
+        Ydb::Config::ReplaceConfigRequest replaceRequest;
+        replaceRequest.set_replace(data);
         return replaceRequest;
     }
 

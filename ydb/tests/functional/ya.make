@@ -10,14 +10,12 @@ RECURSE(
     cms
     compatibility
     config
-    dynumber
     encryption
     hive
     kqp
-    kv_workload
     large_serializable
     limits
-    open_source
+    # minidumps  # breakpad is disabled now, see KIKIMR-18829 for details
     postgresql
     query_cache
     rename
@@ -33,6 +31,7 @@ RECURSE(
     suite_tests
     tpc
     tenants
+    transfer
     ttl
     wardens
     ydb_cli

@@ -156,6 +156,9 @@ struct TSetupSysLocks;
 
 class TNeedGlobalTxId : public yexception {};
 
+class IDataShardInMemoryRestoreActor;
+class IDataShardInMemoryStateActor;
+
 ///
 class TDataShard
     : public TActor<TDataShard>
@@ -164,6 +167,7 @@ class TDataShard
     class TTxStopGuard;
     class TTxGetShardState;
     class TTxInit;
+    class TTxInitRestored;
     class TTxInitSchema;
     class TTxInitSchemaDefaults;
     class TTxPlanStep;
@@ -229,6 +233,9 @@ class TDataShard
     class TTxCdcStreamEmitHeartbeats;
     class TTxUpdateFollowerReadEdge;
     class TTxRemoveSchemaSnapshots;
+    class TTxCleanupUncommitted;
+    class TTxDataCleanup;
+    class TTxCompleteDataCleanup;
 
     template <typename T> friend class TTxDirectBase;
     class TTxUploadRows;
@@ -253,6 +260,8 @@ class TDataShard
     void HandleMonCleanupBorrowedParts(NMon::TEvRemoteHttpInfo::TPtr& ev);
     void HandleMonResetSchemaVersion(NMon::TEvRemoteHttpInfo::TPtr& ev);
 
+    friend class TDataShardInMemoryRestoreActor;
+    friend class TDataShardInMemoryStateActor;
     friend class TDataShardMiniKQLFactory;
     friend class TDataTransactionProcessor;
     friend class TSchemeTransactionProcessor;
@@ -1147,6 +1156,12 @@ class TDataShard
             SysMvcc_FollowerReadEdgeTxId = 43,
             SysMvcc_FollowerReadEdgeRepeatable = 44,
 
+            // Last known in-memory state actor
+            Sys_InMemoryStateActorId = 45,
+            Sys_InMemoryStateGeneration = 46,
+
+            Sys_DataCleanupCompletedGeneration = 47,
+
             // reserved
             SysPipeline_Flags = 1000,
             SysPipeline_LimitActiveTx,
@@ -1208,6 +1223,8 @@ class TDataShard
             value = rowset.GetValue<Schema::Sys::Bytes>();
         return true;
     }
+
+    static bool SysGetActorId(NIceDb::TNiceDb& db, ui64 key, TActorId& value);
 
     template <typename TEvHandle>
     void ForwardEventToOperation(TAutoPtr<TEvHandle> ev, const TActorContext &ctx) {
@@ -1377,6 +1394,8 @@ class TDataShard
 
     void Handle(TEvIncrementalRestoreScan::TEvFinished::TPtr& ev, const TActorContext& ctx);
 
+    void Handle(TEvDataShard::TEvForceDataCleanup::TPtr& ev, const TActorContext& ctx);
+
     void HandleByReplicationSourceOffsetsServer(STATEFN_SIG);
 
     void DoPeriodicTasks(const TActorContext &ctx);
@@ -1409,6 +1428,9 @@ class TDataShard
     void SwitchToWork(const TActorContext &ctx);
     void SyncConfig();
 
+    // Cleanup for bug https://github.com/ydb-platform/ydb/issues/13387
+    void CleanupUncommitted(const TActorContext &ctx);
+
     TMaybe<TInstant> GetTxPlanStartTimeAndCleanup(ui64 step);
 
     struct TPersistentTablet;
@@ -1428,6 +1450,7 @@ class TDataShard
     void PersistSys(NIceDb::TNiceDb& db, ui64 key, ui64 value) const;
     void PersistSys(NIceDb::TNiceDb& db, ui64 key, ui32 value) const;
     void PersistSys(NIceDb::TNiceDb& db, ui64 key, bool value) const;
+    void PersistSys(NIceDb::TNiceDb& db, ui64 key, const TActorId& value) const;
     void PersistUserTable(NIceDb::TNiceDb& db, ui64 tableId, const TUserTable& tableInfo);
     void PersistUserTableFullCompactionTs(NIceDb::TNiceDb& db, ui64 tableId, ui64 ts);
     void PersistMoveUserTable(NIceDb::TNiceDb& db, ui64 prevTableId, ui64 tableId, const TUserTable& tableInfo);
@@ -1438,6 +1461,7 @@ class TDataShard
     bool CheckMediatorAuthorisation(ui64 mediatorId);
 
     NTabletFlatExecutor::ITransaction* CreateTxInit();
+    NTabletFlatExecutor::ITransaction* CreateTxInitRestored();
     NTabletFlatExecutor::ITransaction* CreateTxInitSchema();
     NTabletFlatExecutor::ITransaction* CreateTxInitSchemaDefaults();
     NTabletFlatExecutor::ITransaction* CreateTxSchemaChanged(TEvDataShard::TEvSchemaChangedResult::TPtr& ev);
@@ -1456,6 +1480,7 @@ public:
     }
 
     TDataShard(const TActorId &tablet, TTabletStorageInfo *info);
+    ~TDataShard();
 
 
     void PrepareAndSaveOutReadSets(ui64 step,
@@ -1479,6 +1504,7 @@ public:
                       TVector<THolder<TEvTxProcessing::TEvReadSet>> &&readsets);
     void ResendReadSet(const TActorContext& ctx, ui64 step, ui64 txId, ui64 source, ui64 target, const TString& body, ui64 seqno);
     void SendDelayedAcks(const TActorContext& ctx, TVector<THolder<IEventHandle>>& delayedAcks) const;
+    void GetCleanupReplies(TOperation* op, std::vector<std::unique_ptr<IEventHandle>>& cleanupReplies);
     void GetCleanupReplies(const TOperation::TPtr& op, std::vector<std::unique_ptr<IEventHandle>>& cleanupReplies);
     void SendConfirmedReplies(TMonotonic ts, std::vector<std::unique_ptr<IEventHandle>>&& replies);
     void SendCommittedReplies(std::vector<std::unique_ptr<IEventHandle>>&& replies);
@@ -1755,6 +1781,7 @@ public:
     void SnapshotComplete(TIntrusivePtr<NTabletFlatExecutor::TTableSnapshotContext> snapContext, const TActorContext &ctx) override;
     void CompactionComplete(ui32 tableId, const TActorContext &ctx) override;
     void CompletedLoansChanged(const TActorContext &ctx) override;
+    void DataCleanupComplete(ui64 dataCleanupGeneration, const TActorContext &ctx) override;
 
     void ReplyCompactionWaiters(
         ui32 tableId,
@@ -2128,6 +2155,8 @@ public:
         Y_ABORT_UNLESS(type != ELogThrottlerType::LAST);
         return LogThrottlers[type];
     };
+
+    void OnTableCreated(TTransactionContext& txc, const TActorContext& ctx);
 
 private:
     ///
@@ -2684,6 +2713,30 @@ private:
     TS3UploadsManager S3Uploads;
     TS3DownloadsManager S3Downloads;
 
+    // Initial state
+    struct TInitialState {
+        TVector<IDataShardChangeCollector::TChange> ChangeRecords;
+    };
+    std::optional<TInitialState> InitialState;
+
+    // In-memory state transfer support
+    IDataShardInMemoryRestoreActor* InMemoryRestoreActor = nullptr;
+    IDataShardInMemoryStateActor* InMemoryStateActor = nullptr;
+    TActorId InMemoryStateActorId;
+    TActorId InMemoryStatePrevActorId;
+    ui64 InMemoryStatePrevGeneration = 0;
+
+    void StartInMemoryRestoreActor();
+    void OnInMemoryStateRestored();
+    bool StartInMemoryStateActor();
+
+    struct TPreservedInMemoryState {
+        TVector<TString> Chunks;
+        TVector<size_t> Checkpoints;
+    };
+
+    TPreservedInMemoryState PreserveInMemoryState();
+
     struct TMediatorDelayedReply {
         TActorId Target;
         THolder<IEventBase> Event;
@@ -2707,7 +2760,6 @@ private:
 
     struct TCoordinatorSubscription {
         ui64 CoordinatorId;
-        TMediatorTimecastReadStep::TCPtr ReadStep;
     };
 
     TVector<TCoordinatorSubscription> CoordinatorSubscriptions;
@@ -2719,6 +2771,9 @@ private:
     TVector<THolder<IEventHandle>> MediatorStateWaitingMsgs;
     bool MediatorStateWaiting = false;
     bool MediatorStateRestoreTxPending = false;
+
+    bool InMemoryVarsRestored = false;
+    bool InMemoryVarsFrozen = false;
 
     bool IcbRegistered = false;
 
@@ -2922,6 +2977,8 @@ private:
     // from the front
     THashMap<ui32, TCompactionWaiterList> CompactionWaiters;
 
+    TMap<ui64, TActorId> DataCleanupWaiters;
+
     struct TCompactBorrowedWaiter : public TThrRefBase {
         TCompactBorrowedWaiter(TActorId actorId, TLocalPathId requestedTable)
             : ActorId(actorId)
@@ -2971,6 +3028,8 @@ private:
 
     ui32 StatisticsScanTableId = 0;
     ui64 StatisticsScanId = 0;
+
+    ui64 CurrentDataCleanupGeneration = 0;
 
 public:
     auto& GetLockChangeRecords() {
@@ -3168,6 +3227,7 @@ protected:
             HFunc(TEvPrivate::TEvStatisticsScanFinished, Handle);
             HFuncTraced(TEvPrivate::TEvRemoveSchemaSnapshots, Handle);
             HFunc(TEvIncrementalRestoreScan::TEvFinished, Handle);
+            HFunc(TEvDataShard::TEvForceDataCleanup, Handle);
             default:
                 if (!HandleDefaultEvents(ev, SelfId())) {
                     ALOG_WARN(NKikimrServices::TX_DATASHARD, "TDataShard::StateWork unhandled event type: " << ev->GetTypeRewrite() << " event: " << ev->ToString());
@@ -3344,7 +3404,7 @@ protected:
             ev->Record.MutableTableStats()->SetLocksWholeShard(TabletCounters->Cumulative()[COUNTER_LOCKS_WHOLE_SHARD].Get());
             ev->Record.MutableTableStats()->SetLocksBroken(TabletCounters->Cumulative()[COUNTER_LOCKS_BROKEN].Get());
 
-            ev->Record.SetNodeId(ctx.ExecutorThread.ActorSystem->NodeId);
+            ev->Record.SetNodeId(ctx.SelfID.NodeId());
             ev->Record.SetStartTime(StartTime().MilliSeconds());
 
             if (DstSplitDescription)
