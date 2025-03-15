@@ -1,7 +1,7 @@
 #include "ydb_dynamic_config.h"
 
-#include <ydb-cpp-sdk/client/draft/ydb_dynamic_config.h>
-#include <ydb-cpp-sdk/client/config/config.h>
+#include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/draft/ydb_dynamic_config.h>
+#include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/config/config.h>
 #include <ydb/library/yaml_config/public/yaml_config.h>
 
 #include <openssl/sha.h>
@@ -129,7 +129,7 @@ int TCommandConfigFetch::Run(TConfig& config) {
         }
 
         if (!OutDir) {
-            Cout << WrapYaml(cfg);
+            Cout << cfg << Endl;
         } else {
             TFsPath dir(OutDir);
             dir.MkDirs();
@@ -164,14 +164,14 @@ int TCommandConfigFetch::Run(TConfig& config) {
         if (!storageConfig.empty() || DedicatedStorageSection) {
             Cerr << "cluster config: " << Endl;
         }
-        Cout << WrapYaml(TString(clusterConfig));
+        Cout << clusterConfig << Endl;
     }
 
     if (!storageConfig.empty()) {
         if (!clusterConfig.empty() || DedicatedClusterSection) {
             Cerr << "storage config:" << Endl;
         }
-        Cout << WrapYaml(TString(storageConfig));
+        Cout << storageConfig << Endl;
     }
 
     if (clusterConfig.empty() && storageConfig.empty()) {

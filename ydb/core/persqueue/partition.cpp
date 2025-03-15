@@ -2122,6 +2122,8 @@ void TPartition::RunPersist() {
         WriteInfosApplied.clear();
         //Done with counters.
 
+        DumpKeyValueRequest(PersistRequest->Record);
+
         PersistRequestSpan.Attribute("bytes", static_cast<i64>(PersistRequest->Record.ByteSizeLong()));
         ctx.Send(HaveWriteMsg ? BlobCache : Tablet, PersistRequest.Release(), 0, 0, PersistRequestSpan.GetTraceId());
         CurrentPersistRequestSpan = std::move(PersistRequestSpan);
@@ -2763,7 +2765,7 @@ void TPartition::EndChangePartitionConfig(NKikimrPQ::TPQTabletConfig&& config,
 
 TString TPartition::GetKeyConfig() const
 {
-    return Sprintf("_config_%u", Partition.OriginalPartitionId);
+    return Sprintf("_config_%u", Partition.InternalPartitionId);
 }
 
 void TPartition::ChangePlanStepAndTxId(ui64 step, ui64 txId)

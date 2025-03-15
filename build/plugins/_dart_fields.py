@@ -670,7 +670,7 @@ class LintConfigs:
 class LintExtraParams:
     KEY = 'LINT-EXTRA-PARAMS'
 
-    _CUSTOM_CLANG_FORMAT_BIN_ALLOWED_PATHS = ('ads', 'bigrt', 'grut', 'yabs')
+    _CUSTOM_CLANG_FORMAT_ALLOWED_PATHS = ('ads', 'bigrt', 'grut', 'yabs', 'maps')
 
     @classmethod
     def from_macro_args(cls, unit, flat_args, spec_args):
@@ -680,9 +680,9 @@ class LintExtraParams:
                 message = 'Wrong EXTRA_PARAMS value: "{}". Values must have format "name=value".'.format(arg)
                 ymake.report_configure_error(message)
                 raise DartValueError()
-            if 'clang_format_bin' in arg:
+            if 'custom_clang_format' in arg:
                 upath = unit.path()[3:]
-                if not upath.startswith(cls._CUSTOM_CLANG_FORMAT_BIN_ALLOWED_PATHS):
+                if not upath.startswith(cls._CUSTOM_CLANG_FORMAT_ALLOWED_PATHS):
                     message = f'Custom clang-format is not allowed in upath: {upath}'
                     ymake.report_configure_error(message)
                     raise DartValueError()
@@ -1150,6 +1150,7 @@ class TestFiles:
         'grut/libs/bigrt/profile',
         'grut/libs/bigrt/profiles',
         'grut/libs/bigrt/queue_info_config',
+        'grut/libs/bigrt/server',
         'grut/libs/shooter',
     )
 
