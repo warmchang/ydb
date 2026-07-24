@@ -752,6 +752,7 @@ ydb/tests/fq/yt/kqp_yt_file/part17 test.py.test[action-eval_pragma-]
 ydb/tests/fq/yt/kqp_yt_file/part17 test.py.test[aggregate-aggregate_by_column_lookup_in_const_dict-default.txt]
 ydb/tests/fq/yt/kqp_yt_file/part18 py3test.sole chunk
 ydb/tests/fq/yt/kqp_yt_file/part18 test.py.test[action-empty_do-default.txt]
+ydb/tests/fq/yt/kqp_yt_file/part18 test.py.test[aggregate-aggregation_with_named_node-]
 ydb/tests/fq/yt/kqp_yt_file/part19 py3test.sole chunk
 ydb/tests/fq/yt/kqp_yt_file/part19 test.py.test[action-evaluate_pure-]
 ydb/tests/fq/yt/kqp_yt_file/part19 test.py.test[aggregate-aggregate_with_const_yson_options-default.txt]
