@@ -470,8 +470,10 @@ ydb/core/kqp/ut/indexes/prefixed_vector unittest.[*/*] chunk
 ydb/core/kqp/ut/join KqpJoinOrder.Chain65Nodes
 ydb/core/kqp/ut/olap KqpOlapOptimizer.SpecialSliceToOneLayer
 ydb/core/kqp/ut/olap KqpOlapOptimizer.TilingPlusPlusTtlDeletion
+ydb/core/kqp/ut/olap/indexes KqpOlapIndexes.IndexesActualization-QueryService
 ydb/core/kqp/ut/olap/types KqpOlapJson.QuotedFilterVariants[10,false,1,0,100,0.5]
 ydb/core/kqp/ut/olap/types KqpOlapJson.SimpleExistsVariants[10,false,0,10,100,0.5]
+ydb/core/kqp/ut/olap/types KqpOlapJson.SimpleExistsVariants[10,false,1024,1000,0,0.5]
 ydb/core/kqp/ut/query KqpLimits.OutOfSpaceYQLUpsertFail
 ydb/core/kqp/ut/query unittest.[*/*] chunk
 ydb/core/kqp/ut/rbo KqpRboOlap.BlockChannelAuto
